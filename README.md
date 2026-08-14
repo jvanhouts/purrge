@@ -22,14 +22,21 @@ Delete 4 directories and free 104 MB?   [ Cough it up ]  [ Leave it ]
 
 ## Install
 
-Requires [Bun](https://bun.sh). [gum](https://github.com/charmbracelet/gum) is
-optional — without it, `purrge` falls back to plain text and a `y/N` prompt.
+Nothing to install — if you have [Bun](https://bun.sh), just run it:
 
 ```sh
-brew install gum          # optional, but it's the nice half
-git clone git@github.com:jvanhouts/purrge.git
-cd purrge && bun link     # puts `purrge` on your PATH
+bunx github:jvanhouts/purrge 8
 ```
+
+That always pulls the latest `main`. To keep it on your PATH instead:
+
+```sh
+bun add -g git+https://github.com/jvanhouts/purrge.git
+```
+
+[gum](https://github.com/charmbracelet/gum) is optional but it's the nice half —
+`brew install gum`. Without it, purrge falls back to plain text and a `y/N`
+prompt, so it stays scriptable either way.
 
 ## Usage
 
