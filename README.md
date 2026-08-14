@@ -11,6 +11,11 @@ last touched each one, measures what its `node_modules` / `.next` / `dist` / `Po
    ~/Documents/projects
    idle 4+ weeks · min 10 MB
 
+  ⠹ sniffing around projects… 41 projects · 6 worth purging
+    old-client-site     52 MB     2y
+    nested/prototype    52 MB   15mo
+    …and 4 more
+
 3 projects scanned in 3.7s · 2 worth purging
 
   arrows to move · space to toggle · enter when ready
@@ -21,8 +26,12 @@ last touched each one, measures what its `node_modules` / `.next` / `dist` / `Po
   space toggle · a all · n none · enter confirm · esc cancel
 ```
 
-The footer total is live — it recounts as you tick rows, so you can see what a
-selection actually buys you before committing to it.
+Matches appear in the preview as they are found, biggest first, rather than
+after the whole walk finishes — sizing a large `node_modules` takes long enough
+that a bare spinner wastes the wait.
+
+The footer total is live too: it recounts as you tick rows, so you can see what
+a selection actually buys you before committing to it.
 
 ## Install
 
@@ -35,7 +44,7 @@ bunx github:jvanhouts/purrge 8
 To pin a known version (recommended if you're sharing it around — see below):
 
 ```sh
-bunx github:jvanhouts/purrge#v0.2.0 8
+bunx github:jvanhouts/purrge#v0.3.0 8
 ```
 
 Or keep it on your PATH:
@@ -57,7 +66,7 @@ and silently gives you the old build — bunx has no `--force` or `--no-cache` f
 Two ways around it:
 
 ```sh
-bunx github:jvanhouts/purrge#v0.2.0    # pin a tag — a new tag is a new cache key
+bunx github:jvanhouts/purrge#v0.3.0    # pin a tag — a new tag is a new cache key
 bun pm cache rm                        # or nuke the cache, then re-run
 ```
 

@@ -3,11 +3,15 @@
  * purrge — cough up the build artifacts your stale projects are sitting on.
  */
 import { rm } from "node:fs/promises";
+
+const HIDE = "\x1b[?25l";
+const SHOW = "\x1b[?25h";
 import { relative, resolve, basename } from "node:path";
 import pkg from "../package.json";
 import { mapLimit } from "./concurrency";
 import { bold, dim, green, humanAge, humanBytes, parseBytes, pink, plural, red } from "./format";
 import * as ui from "./gum";
+import { LiveRegion, SPINNER } from "./live";
 import { pick } from "./picker";
 import { findProjects, type Project } from "./scan";
 
@@ -81,14 +85,6 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-// ── internal: the scan half, so it can run behind a gum spinner ───────────────
-
-if (process.argv[2] === "--scan-json") {
-  const projects = await findProjects(resolve(process.argv[3] ?? process.cwd()));
-  console.log(JSON.stringify(projects));
-  process.exit(0);
-}
-
 // ── main ─────────────────────────────────────────────────────────────────────
 
 const opts = parseArgs(process.argv.slice(2));
@@ -101,14 +97,14 @@ if (showUi) {
   );
 }
 
+const cutoff = Date.now() - opts.weeks * 7 * 86_400_000;
+const worthPurging = (p: Project) => p.bytes >= opts.min && (opts.all || p.mtime < cutoff);
+
 const started = performance.now();
-const projects = await scan(opts.root, showUi);
+const projects = await scanWithPreview(opts.root, showUi, worthPurging);
 const elapsed = (performance.now() - started) / 1000;
 
-const cutoff = Date.now() - opts.weeks * 7 * 86_400_000;
-const stale = projects
-  .filter((p) => p.bytes >= opts.min && (opts.all || p.mtime < cutoff))
-  .sort((a, b) => b.bytes - a.bytes);
+const stale = projects.filter(worthPurging).sort((a, b) => b.bytes - a.bytes);
 
 if (opts.json) {
   console.log(JSON.stringify({ root: opts.root, scanned: projects.length, projects: stale }, null, 2));
@@ -213,20 +209,69 @@ await ui.result(
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-async function scan(root: string, withSpinner: boolean): Promise<Project[]> {
-  if (!withSpinner || !ui.INTERACTIVE) return findProjects(root);
+/**
+ * Walk the tree, showing matches in a preview list as they are discovered.
+ *
+ * Sizing a big `node_modules` takes long enough that a bare spinner wastes the
+ * wait — the projects are known one by one, so they may as well be shown one by
+ * one. The preview is a bounded window over the current top hits, repainted on a
+ * timer, and erased once the real list takes over.
+ */
+async function scanWithPreview(
+  root: string,
+  withPreview: boolean,
+  matches: (p: Project) => boolean,
+): Promise<Project[]> {
+  if (!withPreview || !ui.INTERACTIVE) return findProjects(root);
 
-  const { code, out } = await ui.spin(`sniffing around ${basename(root) || root}…`, [
-    process.execPath,
-    import.meta.path,
-    "--scan-json",
-    root,
-  ]);
-  if (code !== 0) return findProjects(root); // spinner subprocess failed — just scan inline
+  const region = new LiveRegion();
+  const hits: Project[] = [];
+  let scanned = 0;
+  let frame = 0;
+
+  const paint = () => {
+    const spin = pink(SPINNER[frame++ % SPINNER.length]);
+    const lines = [
+      `  ${spin} sniffing around ${basename(root) || root}… ${dim(
+        `${plural(scanned, "project")} · ${hits.length} worth purging`,
+      )}`,
+      "",
+    ];
+
+    const height = Math.max(3, Math.min(hits.length, (process.stdout.rows || 24) - 10));
+    const shown = hits.slice(0, height);
+    const nameW = Math.max(0, ...shown.map((p) => rel(p.dir).length));
+    const sizeW = Math.max(0, ...shown.map((p) => humanBytes(p.bytes).length));
+
+    for (const p of shown) {
+      lines.push(
+        `    ${rel(p.dir).padEnd(nameW)}  ${humanBytes(p.bytes).padStart(sizeW)}  ${dim(
+          humanAge(p.mtime).padStart(5),
+        )}`,
+      );
+    }
+    const more = hits.length - shown.length;
+    if (more > 0) lines.push(dim(`    … and ${more} more`));
+
+    region.render(lines);
+  };
+
+  process.stdout.write(HIDE);
+  const timer = setInterval(paint, 80);
+  paint();
+
   try {
-    return JSON.parse(out) as Project[];
-  } catch {
-    return findProjects(root);
+    return await findProjects(root, (p) => {
+      scanned++;
+      if (!matches(p)) return;
+      // Keep the preview ordered the way the final list will be.
+      const at = hits.findIndex((h) => h.bytes < p.bytes);
+      hits.splice(at === -1 ? hits.length : at, 0, p);
+    });
+  } finally {
+    clearInterval(timer);
+    region.clear();
+    process.stdout.write(SHOW);
   }
 }
 

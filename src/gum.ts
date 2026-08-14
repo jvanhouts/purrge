@@ -38,19 +38,6 @@ export async function banner(title: string, subtitle: string) {
   );
 }
 
-/** Run a command behind a spinner; returns its stdout. */
-export async function spin(title: string, cmd: string[]): Promise<{ code: number; out: string }> {
-  if (!INTERACTIVE) {
-    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "inherit" });
-    const out = await new Response(proc.stdout).text();
-    return { code: await proc.exited, out };
-  }
-  return run([
-    "spin", "--spinner", "meter", "--spinner.foreground", PINK,
-    "--title", title, "--show-output", "--", ...cmd,
-  ]);
-}
-
 export async function confirm(prompt: string, affirmative: string, negative: string): Promise<boolean> {
   if (!INTERACTIVE) {
     process.stdout.write(`${prompt} [y/N] `);

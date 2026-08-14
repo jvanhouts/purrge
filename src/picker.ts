@@ -7,6 +7,7 @@
  * on every keystroke.
  */
 import { bold, dim, pink } from "./format";
+import { LiveRegion } from "./live";
 
 export type PickRow<T> = {
   value: T;
@@ -18,7 +19,6 @@ export type PickRow<T> = {
 const ESC = "\x1b";
 const HIDE_CURSOR = `${ESC}[?25l`;
 const SHOW_CURSOR = `${ESC}[?25h`;
-const CLEAR_LINE = `${ESC}[2K`;
 
 export type PickOptions<T> = {
   rows: PickRow<T>[];
@@ -32,7 +32,7 @@ export async function pick<T>({ rows, header, footer }: PickOptions<T>): Promise
   const selected = rows.map(() => true);
   let cursor = 0;
   let offset = 0;
-  let printed = 0;
+  const region = new LiveRegion();
   let done: ((v: T[] | null) => void) | null = null;
 
   const viewport = () => Math.max(3, Math.min(rows.length, (process.stdout.rows || 24) - 8));
@@ -63,20 +63,7 @@ export async function pick<T>({ rows, header, footer }: PickOptions<T>): Promise
   }
 
   function draw() {
-    const lines = frame();
-    // Rewind over the previous frame, then repaint in place.
-    const out = printed ? `${ESC}[${printed}A` : "";
-    process.stdout.write(
-      out + lines.map((l) => `${CLEAR_LINE}${l}`).join("\n") + "\n" + ERASE_BELOW(lines.length, printed),
-    );
-    printed = lines.length;
-  }
-
-  /** Wipe leftovers when a frame gets shorter than the one before it. */
-  function ERASE_BELOW(now: number, before: number): string {
-    if (before <= now) return "";
-    const extra = before - now;
-    return `${`${CLEAR_LINE}\n`.repeat(extra)}${ESC}[${extra}A`;
+    region.render(frame());
   }
 
   function cleanup() {
@@ -89,28 +76,59 @@ export async function pick<T>({ rows, header, footer }: PickOptions<T>): Promise
   function finish(value: T[] | null) {
     cleanup();
     // Leave the final frame on screen, cursor below it.
+    region.release();
     process.stdout.write("\n");
     done?.(value);
   }
 
   /**
-   * Split a chunk into individual keypresses. Terminals coalesce bytes — key
-   * repeat, paste, or a piped stdin can deliver several keys in one event, so
-   * matching the whole chunk drops every key but the first.
+   * Split a chunk into individual keypresses.
+   *
+   * Terminals coalesce bytes — key repeat, paste, or a piped stdin can deliver
+   * several keys in one event, so matching the whole chunk drops every key but
+   * the first.
+   *
+   * Terminal *replies* land here too. gum asks the terminal for its background
+   * colour and cursor position, and the answers (`ESC ] 11 ; rgb:…`) can arrive
+   * after gum has exited — by which point we own stdin. Those must be swallowed
+   * whole: their leading ESC would otherwise read as "cancel" and tear the list
+   * down before the user has touched a key.
    */
   function keys(chunk: string): string[] {
     const out: string[] = [];
+
     for (let i = 0; i < chunk.length; ) {
-      if (chunk[i] === ESC && chunk[i + 1] === "[") {
+      if (chunk[i] !== ESC) {
+        out.push(chunk[i++]);
+        continue;
+      }
+
+      const next = chunk[i + 1];
+
+      if (next === "[") {
+        // CSI — arrows, page keys, cursor-position reports.
         let j = i + 2;
         while (j < chunk.length && !/[@-~]/.test(chunk[j])) j++;
         out.push(chunk.slice(i, j + 1));
         i = j + 1;
-      } else {
-        out.push(chunk[i]);
+      } else if (next === "]" || next === "P" || next === "_" || next === "^") {
+        // OSC / DCS / APC / PM — a terminal answering a question. Runs until
+        // BEL or a string terminator; drop the whole thing.
+        let j = i + 2;
+        while (j < chunk.length) {
+          if (chunk[j] === "\x07") { j++; break; }
+          if (chunk[j] === ESC && chunk[j + 1] === "\\") { j += 2; break; }
+          j++;
+        }
+        i = j;
+      } else if (next === undefined) {
+        out.push(ESC); // a real, standalone Escape
         i++;
+      } else {
+        i += 2; // ESC-prefixed key we do not handle (alt+key)
       }
     }
+
     return out;
   }
 

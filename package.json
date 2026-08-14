@@ -1,6 +1,6 @@
 {
   "name": "purrge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Cough up the build artifacts your stale projects are sitting on",
   "type": "module",
   "module": "src/index.ts",

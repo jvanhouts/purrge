@@ -22,7 +22,11 @@ export type Project = {
  * into artifact dirs — that is where all the file count lives — so the walk stays
  * proportional to your source tree rather than to your dependencies.
  */
-export async function findProjects(root: string): Promise<Project[]> {
+export async function findProjects(
+  root: string,
+  /** Called the moment a project has been sized, before the walk finishes. */
+  onProject?: (project: Project) => void,
+): Promise<Project[]> {
   const projects: Project[] = [];
 
   /** @returns newest mtime found in this subtree, artifacts excluded */
@@ -73,7 +77,9 @@ export async function findProjects(root: string): Promise<Project[]> {
       }));
       const bytes = artifacts.reduce((n, a) => n + a.bytes, 0);
       if (bytes > 0) {
-        projects.push({ dir, artifacts, bytes, mtime: newest || (await safeMtime(dir)) });
+        const project = { dir, artifacts, bytes, mtime: newest || (await safeMtime(dir)) };
+        projects.push(project);
+        onProject?.(project);
       }
     }
 
