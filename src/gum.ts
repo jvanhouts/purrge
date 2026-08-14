@@ -9,7 +9,6 @@ export const GUM = Bun.which("gum");
 export const INTERACTIVE = Boolean(GUM) && process.stdout.isTTY && process.stdin.isTTY;
 
 const PINK = "212";
-const MAUVE = "141";
 const MUTED = "244";
 
 async function run(args: string[], capture = true) {
@@ -52,29 +51,6 @@ export async function spin(title: string, cmd: string[]): Promise<{ code: number
   ]);
 }
 
-/**
- * Multi-select list, everything pre-selected.
- * @returns the chosen labels, or null if the user bailed out.
- */
-export async function chooseMany(header: string, items: string[]): Promise<string[] | null> {
-  const safeDefaults = items.every((i) => !i.includes(","));
-  const { code, out } = await run([
-    "choose", "--no-limit",
-    "--header", header,
-    "--header.foreground", MAUVE,
-    "--cursor", "  ",
-    "--cursor-prefix", "[ ] ",
-    "--selected-prefix", "[✓] ",
-    "--unselected-prefix", "[ ] ",
-    "--selected.foreground", PINK,
-    "--height", String(Math.min(items.length + 2, 20)),
-    ...(safeDefaults ? ["--selected", items.join(",")] : []),
-    ...items,
-  ]);
-  if (code !== 0) return null;
-  return out.split("\n").filter(Boolean);
-}
-
 export async function confirm(prompt: string, affirmative: string, negative: string): Promise<boolean> {
   if (!INTERACTIVE) {
     process.stdout.write(`${prompt} [y/N] `);
@@ -86,7 +62,7 @@ export async function confirm(prompt: string, affirmative: string, negative: str
       "confirm", prompt,
       "--affirmative", affirmative,
       "--negative", negative,
-      "--prompt.foreground", MAUVE,
+      "--prompt.foreground", "141",
       "--selected.background", PINK,
       "--selected.foreground", "232",
     ],

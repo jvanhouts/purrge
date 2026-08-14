@@ -13,12 +13,16 @@ last touched each one, measures what its `node_modules` / `.next` / `dist` / `Po
 
 3 projects scanned in 3.7s · 2 worth purging
 
-space + arrows to pick, enter to continue — 104 MB across 2 projects
-[✓] old-client-site    52 MB     2y  node_modules dist
-[✓] nested/prototype   52 MB   15mo  node_modules dist
+  arrows to move · space to toggle · enter when ready
+❯ [✓] old-client-site    52 MB     2y  node_modules dist
+  [ ] nested/prototype   52 MB   15mo  node_modules dist
 
-Delete 4 directories and free 104 MB?   [ Cough it up ]  [ Leave it ]
+  52 MB across 1 project
+  space toggle · a all · n none · enter confirm · esc cancel
 ```
+
+The footer total is live — it recounts as you tick rows, so you can see what a
+selection actually buys you before committing to it.
 
 ## Install
 

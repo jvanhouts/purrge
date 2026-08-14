@@ -8,6 +8,7 @@ import pkg from "../package.json";
 import { mapLimit } from "./concurrency";
 import { bold, dim, green, humanAge, humanBytes, parseBytes, pink, plural, red } from "./format";
 import * as ui from "./gum";
+import { pick } from "./picker";
 import { findProjects, type Project } from "./scan";
 
 const HELP = `
@@ -124,27 +125,38 @@ if (!stale.length) {
 }
 
 const total = stale.reduce((n, p) => n + p.bytes, 0);
-const labels = new Map<string, Project>();
-const width = Math.max(...stale.map((p) => label(p).length));
-for (const p of stale) labels.set(row(p, width), p);
+const nameW = Math.max(...stale.map((p) => rel(p.dir).length));
+const sizeW = Math.max(...stale.map((p) => humanBytes(p.bytes).length));
+
+const rows = stale.map((p) => ({
+  value: p,
+  bytes: p.bytes,
+  cells: [
+    rel(p.dir).padEnd(nameW),
+    humanBytes(p.bytes).padStart(sizeW),
+    humanAge(p.mtime).padStart(5),
+    [...new Set(p.artifacts.map((a) => a.name))].join(" "),
+  ],
+}));
 
 let chosen: Project[];
 
 if (opts.dryRun || opts.yes || !ui.INTERACTIVE) {
   console.log("");
-  for (const line of labels.keys()) console.log(`  ${line}`);
-  console.log(`\n  ${bold("TOTAL".padEnd(width))}  ${bold(humanBytes(total).padStart(9))}\n`);
+  for (const r of rows) console.log(`  ${r.cells.join("  ")}`);
+  console.log(`\n  ${bold("TOTAL".padEnd(nameW))}  ${bold(humanBytes(total).padStart(sizeW))}\n`);
   chosen = stale;
 } else {
-  const picked = await ui.chooseMany(
-    `space + arrows to pick, enter to continue — ${humanBytes(total)} across ${plural(stale.length, "project")}`,
-    [...labels.keys()],
-  );
+  const picked = await pick({
+    rows,
+    header: "  arrows to move · space to toggle · enter when ready",
+    footer: (bytes, count) => `${bold(pink(humanBytes(bytes)))} across ${plural(count, "project")}`,
+  });
   if (!picked) {
     await ui.note("Nothing touched.");
     process.exit(0);
   }
-  chosen = picked.map((l) => labels.get(l)!).filter(Boolean);
+  chosen = picked;
 }
 
 if (!chosen.length) {
@@ -189,7 +201,7 @@ await mapLimit(chosen, 6, async (p) => {
   });
   const sum = targets.reduce((n, b) => n + b, 0);
   freed += sum;
-  console.log(`  ${green("✓")} ${rel(p.dir).padEnd(width)}  ${dim(humanBytes(sum).padStart(9))}`);
+  console.log(`  ${green("✓")} ${rel(p.dir).padEnd(nameW)}  ${dim(humanBytes(sum).padStart(9))}`);
 });
 
 await ui.result(
@@ -222,12 +234,3 @@ function rel(dir: string): string {
   return relative(opts.root, dir) || ".";
 }
 
-function label(p: Project): string {
-  return rel(p.dir);
-}
-
-/** Plain text on purpose — gum renders these as list items and adds its own styling. */
-function row(p: Project, w: number): string {
-  const kinds = [...new Set(p.artifacts.map((a) => a.name))].join(" ");
-  return `${label(p).padEnd(w)}  ${humanBytes(p.bytes).padStart(9)}  ${humanAge(p.mtime).padStart(5)}  ${kinds}`;
-}
