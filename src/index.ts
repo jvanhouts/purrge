@@ -6,7 +6,7 @@ import { rm } from "node:fs/promises";
 import { relative, resolve, basename } from "node:path";
 import pkg from "../package.json";
 import { mapLimit } from "./concurrency";
-import { bold, dim, green, humanAge, humanBytes, parseBytes, pink, red } from "./format";
+import { bold, dim, green, humanAge, humanBytes, parseBytes, pink, plural, red } from "./format";
 import * as ui from "./gum";
 import { findProjects, type Project } from "./scan";
 
@@ -115,7 +115,7 @@ if (opts.json) {
 }
 
 await ui.note(
-  `${projects.length} projects scanned in ${elapsed.toFixed(1)}s · ${stale.length} worth purging`,
+  `${plural(projects.length, "project")} scanned in ${elapsed.toFixed(1)}s · ${stale.length} worth purging`,
 );
 
 if (!stale.length) {
@@ -137,7 +137,7 @@ if (opts.dryRun || opts.yes || !ui.INTERACTIVE) {
   chosen = stale;
 } else {
   const picked = await ui.chooseMany(
-    `space + arrows to pick, enter to continue — ${humanBytes(total)} across ${stale.length} projects`,
+    `space + arrows to pick, enter to continue — ${humanBytes(total)} across ${plural(stale.length, "project")}`,
     [...labels.keys()],
   );
   if (!picked) {
@@ -156,13 +156,13 @@ const chosenBytes = chosen.reduce((n, p) => n + p.bytes, 0);
 const dirCount = chosen.reduce((n, p) => n + p.artifacts.length, 0);
 
 if (opts.dryRun) {
-  await ui.result(`Dry run — would cough up ${humanBytes(chosenBytes)} from ${dirCount} directories.`);
+  await ui.result(`Dry run — would cough up ${humanBytes(chosenBytes)} from ${plural(dirCount, "directory", "directories")}.`);
   process.exit(0);
 }
 
 if (!opts.yes) {
   const ok = await ui.confirm(
-    `Delete ${dirCount} directories and free ${humanBytes(chosenBytes)}?`,
+    `Delete ${plural(dirCount, "directory", "directories")} and free ${humanBytes(chosenBytes)}?`,
     "Cough it up",
     "Leave it",
   );
@@ -194,7 +194,7 @@ await mapLimit(chosen, 6, async (p) => {
 
 await ui.result(
   failed
-    ? `Freed ${humanBytes(freed)} — ${failed} directories refused to budge.`
+    ? `Freed ${humanBytes(freed)} — ${plural(failed, "directory", "directories")} refused to budge.`
     : `Freed ${humanBytes(freed)}. 🐱`,
   !failed,
 );

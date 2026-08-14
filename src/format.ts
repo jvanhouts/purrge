@@ -33,3 +33,8 @@ export const pink = esc("38;5;212");
 export const mauve = esc("38;5;141");
 export const green = esc("38;5;42");
 export const red = esc("38;5;203");
+
+/** `plural(1, "directory", "directories")` → "1 directory" */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
