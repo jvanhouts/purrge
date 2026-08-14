@@ -1,14 +1,34 @@
 {
   "name": "purrge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cough up the build artifacts your stale projects are sitting on",
   "type": "module",
   "module": "src/index.ts",
-  "bin": { "purrge": "src/index.ts" },
-  "files": ["src", "README.md", "LICENSE"],
-  "keywords": ["cleanup", "disk-space", "node_modules", "bun", "cli", "gum"],
+  "bin": {
+    "purrge": "src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "cleanup",
+    "disk-space",
+    "node_modules",
+    "bun",
+    "cli",
+    "gum"
+  ],
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/jvanhouts/purrge.git" },
-  "engines": { "bun": ">=1.1.0" },
-  "devDependencies": { "@types/bun": "latest" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jvanhouts/purrge.git"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
 }

@@ -32,7 +32,13 @@ Nothing to install — if you have [Bun](https://bun.sh), just run it:
 bunx github:jvanhouts/purrge 8
 ```
 
-That always pulls the latest `main`. To keep it on your PATH instead:
+To pin a known version (recommended if you're sharing it around — see below):
+
+```sh
+bunx github:jvanhouts/purrge#v0.2.0 8
+```
+
+Or keep it on your PATH:
 
 ```sh
 bun add -g git+https://github.com/jvanhouts/purrge.git
@@ -41,6 +47,19 @@ bun add -g git+https://github.com/jvanhouts/purrge.git
 [gum](https://github.com/charmbracelet/gum) is optional but it's the nice half —
 `brew install gum`. Without it, purrge falls back to plain text and a `y/N`
 prompt, so it stays scriptable either way.
+
+### Getting a newer version
+
+Heads up: `bunx github:user/repo` with no ref resolves the default branch **once**
+and then caches that commit forever. A later `bunx` run re-uses the cached copy
+and silently gives you the old build — bunx has no `--force` or `--no-cache` flag.
+
+Two ways around it:
+
+```sh
+bunx github:jvanhouts/purrge#v0.2.0    # pin a tag — a new tag is a new cache key
+bun pm cache rm                        # or nuke the cache, then re-run
+```
 
 ## Usage
 
