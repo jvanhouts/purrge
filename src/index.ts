@@ -14,15 +14,19 @@ import * as ui from "./gum";
 import { LiveRegion, SPINNER } from "./live";
 import { pick } from "./picker";
 import { findProjects, type Project } from "./scan";
+import { findCargoTargets } from "./scan";
+import { loadConfig } from "./config";
 
 const HELP = `
 ${bold(pink("purrge"))} ${dim(`v${pkg.version}`)} — cough up build artifacts from stale projects
 
 ${bold("USAGE")}
   purrge [weeks] [options]
+  purrge cargo sweep [options]
 
 ${bold("OPTIONS")}
-  -w, --weeks <n>   only projects untouched for n+ weeks (default 4)
+  -w, --weeks <n>   only projects untouched for n+ weeks (default from config, 8)
+  -d, --days <n>    cargo sweep age threshold in days (default from config, 14)
   -r, --root <dir>  directory to scan (default: cwd)
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
@@ -46,21 +50,26 @@ type Options = {
   yes: boolean;
   dryRun: boolean;
   json: boolean;
+  cargoSweep: boolean;
+  cargoDays: number;
 };
 
-function parseArgs(argv: string[]): Options {
+function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>>): Options {
   const o: Options = {
-    weeks: 4,
+    weeks: config.PURGE_STALE_WEEKS_AMOUNT,
     root: process.cwd(),
     min: 10 * 1024 ** 2,
     all: false,
     yes: false,
     dryRun: false,
     json: false,
+    cargoSweep: argv[0] === "cargo" && argv[1] === "sweep",
+    cargoDays: config.CARGO_SWEEP_STALE_DAYS_AMOUNT,
   };
 
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
+  const args = o.cargoSweep ? argv.slice(2) : argv;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
     switch (a) {
       case "-h": case "--help": console.log(HELP); process.exit(0);
       case "-v": case "--version": console.log(pkg.version); process.exit(0);
@@ -68,15 +77,20 @@ function parseArgs(argv: string[]): Options {
       case "-y": case "--yes": o.yes = true; break;
       case "-n": case "--dry-run": o.dryRun = true; break;
       case "-j": case "--json": o.json = true; break;
-      case "-w": case "--weeks": o.weeks = Number(argv[++i]); break;
-      case "-r": case "--root": o.root = resolve(argv[++i]); break;
-      case "-m": case "--min": o.min = parseBytes(argv[++i]); break;
+      case "-w": case "--weeks": o.weeks = Number(args[++i]); break;
+      case "-d": case "--days": o.cargoDays = Number(args[++i]); break;
+      case "-r": case "--root": o.root = resolve(args[++i]); break;
+      case "-m": case "--min": o.min = parseBytes(args[++i]); break;
       default:
-        if (/^\d+(\.\d+)?$/.test(a)) o.weeks = Number(a);
+        if (/^\d+(\.\d+)?$/.test(a)) {
+          if (o.cargoSweep) o.cargoDays = Number(a);
+          else o.weeks = Number(a);
+        }
         else die(`unknown argument: ${a}\nrun ${bold("purrge --help")}`);
     }
   }
   if (!Number.isFinite(o.weeks) || o.weeks < 0) die("--weeks must be a non-negative number");
+  if (!Number.isFinite(o.cargoDays) || o.cargoDays < 0) die("--days must be a non-negative number");
   return o;
 }
 
@@ -87,21 +101,24 @@ function die(msg: string): never {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-const opts = parseArgs(process.argv.slice(2));
+const config = await loadConfig();
+const opts = parseArgs(process.argv.slice(2), config);
 const showUi = !opts.json;
 
 if (showUi) {
   await ui.banner(
     "purrge",
-    dim(`${opts.root}\n${opts.all ? "every project" : `idle ${opts.weeks}+ weeks`} · min ${humanBytes(opts.min)}`),
+    dim(`${opts.root}\n${opts.cargoSweep ? `cargo targets idle ${opts.cargoDays}+ days` : opts.all ? "every project" : `idle ${opts.weeks}+ weeks`} · min ${humanBytes(opts.min)}`),
   );
 }
 
-const cutoff = Date.now() - opts.weeks * 7 * 86_400_000;
+const cutoff = Date.now() - (opts.cargoSweep ? opts.cargoDays : opts.weeks * 7) * 86_400_000;
 const worthPurging = (p: Project) => p.bytes >= opts.min && (opts.all || p.mtime < cutoff);
 
 const started = performance.now();
-const projects = await scanWithPreview(opts.root, showUi, worthPurging);
+const projects = opts.cargoSweep
+  ? await findCargoTargets(opts.root)
+  : await scanWithPreview(opts.root, showUi, worthPurging);
 const elapsed = (performance.now() - started) / 1000;
 
 const stale = projects.filter(worthPurging).sort((a, b) => b.bytes - a.bytes);
@@ -278,4 +295,3 @@ async function scanWithPreview(
 function rel(dir: string): string {
   return relative(opts.root, dir) || ".";
 }
-

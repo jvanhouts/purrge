@@ -48,3 +48,6 @@ export const SKIP_DIRS = new Set([".git", ".hg", ".svn", ".Trash", "Library", ".
 
 /** Dependency trees that never contain a project of your own. */
 export const NO_DESCEND = new Set(["vendor", "Pods", ".venv", "venv", "Carthage"]);
+
+/** Tauri's Rust app lives below the JavaScript project root. */
+export const TAURI_DIR = "src-tauri";

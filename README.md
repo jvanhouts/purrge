@@ -35,7 +35,13 @@ a selection actually buys you before committing to it.
 
 ## Install
 
-Nothing to install — if you have [Bun](https://bun.sh), just run it:
+Install from npm (purrge uses Bun as its runtime):
+
+```sh
+npm install -g purrge
+```
+
+Or run the repository directly with [Bun](https://bun.sh):
 
 ```sh
 bunx github:jvanhouts/purrge 8
@@ -44,7 +50,7 @@ bunx github:jvanhouts/purrge 8
 To pin a known version (recommended if you're sharing it around — see below):
 
 ```sh
-bunx github:jvanhouts/purrge#v0.3.0 8
+bunx github:jvanhouts/purrge#v0.4.0 8
 ```
 
 Or keep it on your PATH:
@@ -66,7 +72,7 @@ and silently gives you the old build — bunx has no `--force` or `--no-cache` f
 Two ways around it:
 
 ```sh
-bunx github:jvanhouts/purrge#v0.3.0    # pin a tag — a new tag is a new cache key
+bunx github:jvanhouts/purrge#v0.4.0    # pin a tag — a new tag is a new cache key
 bun pm cache rm                        # or nuke the cache, then re-run
 ```
 
@@ -74,8 +80,9 @@ bun pm cache rm                        # or nuke the cache, then re-run
 
 ```
 purrge [weeks] [options]
+purrge cargo sweep [options]
 
-  -w, --weeks <n>   only projects untouched for n+ weeks (default 4)
+  -w, --weeks <n>   only projects untouched for n+ weeks (default 8)
   -r, --root <dir>  directory to scan (default: cwd)
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
@@ -88,7 +95,26 @@ purrge [weeks] [options]
 purrge 8                  # projects idle for 8+ weeks, under cwd
 purrge -r ~/code -m 1G    # only the big stuff
 purrge -a -j | jq         # inventory everything, delete nothing
+purrge cargo sweep       # remove Cargo targets untouched for 14+ days
+purrge cargo sweep -n   # preview stale Cargo/Tauri build outputs
 ```
+
+## Configuration
+
+Create `purrge.config.json` in the directory where you run purrge. The same
+settings can be supplied as environment variables, which take precedence:
+
+```json
+{
+  "PURGE_STALE_WEEKS_AMOUNT": 8,
+  "CARGO_SWEEP_STALE_DAYS_AMOUNT": 14
+}
+```
+
+`PURGE_STALE_WEEKS_AMOUNT` controls the normal project purge age. `purrge cargo
+sweep` uses `CARGO_SWEEP_STALE_DAYS_AMOUNT` and detects regular Cargo projects
+as well as Tauri projects, including their `src-tauri/target` build output and
+bundles.
 
 ## How it decides
 

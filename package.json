@@ -1,16 +1,21 @@
 {
   "name": "purrge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Cough up the build artifacts your stale projects are sitting on",
   "type": "module",
-  "module": "src/index.ts",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "bin": {
-    "purrge": "src/index.ts"
+    "purrge": "dist/index.js"
   },
   "files": [
-    "src",
+    "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "purrge.config.example.json"
   ],
   "keywords": [
     "cleanup",
@@ -18,7 +23,9 @@
     "node_modules",
     "bun",
     "cli",
-    "gum"
+    "gum",
+    "cargo",
+    "tauri"
   ],
   "license": "MIT",
   "repository": {
@@ -27,6 +34,14 @@
   },
   "engines": {
     "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun run src/index.ts",
+    "prepublishOnly": "bun run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/bun": "latest"
