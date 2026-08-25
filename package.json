@@ -15,7 +15,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "purrge.config.example.json"
+    "purrge.config.example.json",
+    "purrge.config.example.yml"
   ],
   "keywords": [
     "cleanup",
@@ -25,7 +26,8 @@
     "cli",
     "gum",
     "cargo",
-    "tauri"
+    "tauri",
+    "git-worktree"
   ],
   "license": "MIT",
   "repository": {
@@ -37,6 +39,7 @@
   },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun",
+    "test": "bun test",
     "start": "bun run src/index.ts",
     "prepublishOnly": "bun run build"
   },

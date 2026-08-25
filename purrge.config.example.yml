@@ -1,0 +1,14 @@
+# Copy to ~/.purrge/config.yml — settings that follow you between directories.
+
+# `purrge [weeks]` — projects untouched for this many weeks are stale.
+PURGE_STALE_WEEKS_AMOUNT: 8
+
+# `purrge cargo sweep [days]` — Cargo/Tauri target age threshold.
+CARGO_SWEEP_STALE_DAYS_AMOUNT: 14
+
+# `purrge worktrees [days]` — git worktree age threshold.
+WORKTREE_STALE_DAYS_AMOUNT: 14
+
+# Where your linked git worktrees are checked out. `~` is expanded.
+WORKTREE_ROOTS:
+  - ~/.whiskers/worktrees

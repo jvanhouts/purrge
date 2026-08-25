@@ -81,28 +81,85 @@ bun pm cache rm                        # or nuke the cache, then re-run
 ```
 purrge [weeks] [options]
 purrge cargo sweep [options]
+purrge worktrees [days] [options]
 
   -w, --weeks <n>   only projects untouched for n+ weeks (default 8)
+  -d, --days <n>    cargo sweep / worktree age threshold in days (default 14)
   -r, --root <dir>  directory to scan (default: cwd)
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
   -y, --yes         no prompts, purge everything listed
   -n, --dry-run     list what would go, delete nothing
   -j, --json        machine-readable output, never deletes
+  -f, --force       worktrees: include ones with unsaved work
 ```
 
 ```sh
 purrge 8                  # projects idle for 8+ weeks, under cwd
 purrge -r ~/code -m 1G    # only the big stuff
 purrge -a -j | jq         # inventory everything, delete nothing
-purrge cargo sweep       # remove Cargo targets untouched for 14+ days
-purrge cargo sweep -n   # preview stale Cargo/Tauri build outputs
+purrge cargo sweep        # remove Cargo targets untouched for 14+ days
+purrge cargo sweep -n     # preview stale Cargo/Tauri build outputs
+purrge worktrees          # remove git worktrees idle for 14+ days
+purrge worktrees 30 -n    # preview worktrees idle for 30+ days
 ```
+
+## Worktrees
+
+`purrge worktrees` cleans up the linked git worktrees piling up under a shared
+checkout root — the ones a branch-per-worktree workflow leaves behind, each
+carrying its own `node_modules`.
+
+```
+🐱 purrge
+   ~/.whiskers/worktrees
+   idle 14+ days · min 10 MB
+
+53 worktrees scanned in 12.3s · 25 worth purging
+
+  · voja-monorepo-feat-filter-traveler-lists   held back — dirty unmerged
+  · whiskers-main-7                            held back — dirty
+2 worktrees kept back — --force to include them.
+
+❯ [✓] whiskers-chat-refactor   7.5 GB    7d  @20f718a
+  [✓] whiskers-main            3.7 GB   10d  settings-sections
+```
+
+The roots to scan come from `WORKTREE_ROOTS` in the global config, or from
+`--root`. Age is the newest mtime of the worktree's own files — `node_modules`
+and other build output excluded, so reinstalling dependencies does not make a
+dead branch look alive.
+
+**What it refuses to touch.** A worktree is held back, listed but not offered
+up, when removing it would destroy work that exists nowhere else:
+
+- *dirty* — uncommitted changes in the working tree.
+- *unmerged* — a detached `HEAD` whose commits no branch contains. A worktree
+  on a named branch is never flagged: the branch outlives the directory.
+
+`--force` includes them anyway.
+
+**How it removes them.** Via `git worktree remove` in the parent repository, so
+the repo's `.git/worktrees` bookkeeping goes with it and `git worktree list`
+stops advertising a path that is no longer there. If git refuses, purrge deletes
+the directory and runs `git worktree prune` instead.
 
 ## Configuration
 
-Create `purrge.config.json` in the directory where you run purrge. The same
-settings can be supplied as environment variables, which take precedence:
+Machine-wide settings live in `~/.purrge/config.yml` — this is where the
+worktree roots belong, since they are a fact about your machine rather than
+about any one project:
+
+```yaml
+PURGE_STALE_WEEKS_AMOUNT: 8
+CARGO_SWEEP_STALE_DAYS_AMOUNT: 14
+WORKTREE_STALE_DAYS_AMOUNT: 14
+WORKTREE_ROOTS:
+  - ~/.whiskers/worktrees
+```
+
+A `purrge.config.json` in the directory you run purrge from overrides the global
+file per project, and environment variables override both:
 
 ```json
 {
@@ -111,10 +168,14 @@ settings can be supplied as environment variables, which take precedence:
 }
 ```
 
+Lowest precedence first: defaults → `~/.purrge/config.yml` →
+`./purrge.config.json` → environment → command-line flags. `WORKTREE_ROOTS` as
+an environment variable is a comma- or colon-separated list.
+
 `PURGE_STALE_WEEKS_AMOUNT` controls the normal project purge age. `purrge cargo
 sweep` uses `CARGO_SWEEP_STALE_DAYS_AMOUNT` and detects regular Cargo projects
 as well as Tauri projects, including their `src-tauri/target` build output and
-bundles.
+bundles. `purrge worktrees` uses `WORKTREE_STALE_DAYS_AMOUNT`.
 
 ## How it decides
 
@@ -153,6 +214,9 @@ A ~20-project, 40 GB tree scans in under 4 seconds.
   reasoning applies to any lockfile-less dependency dir.
 - mtime is a proxy for "am I still working on this", not proof. `--dry-run`
   first if you're unsure.
+- A worktree's stashes live in the parent repo and survive it; its reflog does
+  not. "Unmerged" is judged against branches, so a commit reachable only from
+  another worktree's detached `HEAD` counts as unmerged.
 
 ## License
 
