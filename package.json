@@ -27,7 +27,10 @@
     "gum",
     "cargo",
     "tauri",
-    "git-worktree"
+    "git-worktree",
+    "ios-simulator",
+    "android-emulator",
+    "xcode"
   ],
   "license": "MIT",
   "repository": {

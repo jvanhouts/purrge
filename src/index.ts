@@ -18,10 +18,12 @@ import { findProjects, type Project } from "./scan";
 import { findCargoTargets } from "./scan";
 import { loadConfig } from "./config";
 import { findWorktrees, isSafe, riskLabel, type Worktree } from "./worktrees";
+import { findSims, isSafe as simIsSafe, removeSim, type Sim } from "./sims";
 
 const HOME = homedir();
 
 const WORKTREE_COMMANDS = new Set(["worktrees", "worktree", "wt"]);
+const SIM_COMMANDS = new Set(["sims", "sim", "simulators", "emulators"]);
 
 const HELP = `
 ${bold(pink("purrge"))} ${dim(`v${pkg.version}`)} — cough up build artifacts from stale projects
@@ -30,17 +32,18 @@ ${bold("USAGE")}
   purrge [weeks] [options]
   purrge cargo sweep [options]
   purrge worktrees [days] [options]
+  purrge sims [days] [options]
 
 ${bold("OPTIONS")}
   -w, --weeks <n>   only projects untouched for n+ weeks (default from config, 8)
-  -d, --days <n>    cargo sweep / worktree age threshold in days (default 14)
+  -d, --days <n>    cargo sweep / worktree / sim age threshold in days
   -r, --root <dir>  directory to scan (default: cwd)
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
   -y, --yes         no prompts, purge everything listed
   -n, --dry-run     list what would go, delete nothing
   -j, --json        machine-readable output, never deletes
-  -f, --force       worktrees: include ones with unsaved work
+  -f, --force       include ones held back as unsafe or in use
   -h, --help        this
   -v, --version     version
 
@@ -49,6 +52,7 @@ ${bold("EXAMPLES")}
   purrge -r ~/code -m 1G ${dim("# only the big stuff under ~/code")}
   purrge -a -j           ${dim("# inventory everything as JSON")}
   purrge worktrees 14    ${dim("# git worktrees idle for 14+ days")}
+  purrge sims 30         ${dim("# simulators, runtimes and AVDs idle 30+ days")}
 
 ${bold("CONFIG")}
   ~/.purrge/config.yml   ${dim("# machine-wide settings, incl. WORKTREE_ROOTS")}
@@ -68,6 +72,8 @@ type Options = {
   worktrees: boolean;
   worktreeDays: number;
   worktreeRoots: string[];
+  sims: boolean;
+  simDays: number;
   force: boolean;
 };
 
@@ -85,10 +91,12 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
     worktrees: WORKTREE_COMMANDS.has(argv[0]),
     worktreeDays: config.WORKTREE_STALE_DAYS_AMOUNT,
     worktreeRoots: config.WORKTREE_ROOTS,
+    sims: SIM_COMMANDS.has(argv[0]),
+    simDays: config.SIM_STALE_DAYS_AMOUNT,
     force: false,
   };
 
-  const args = o.cargoSweep ? argv.slice(2) : o.worktrees ? argv.slice(1) : argv;
+  const args = o.cargoSweep ? argv.slice(2) : o.worktrees || o.sims ? argv.slice(1) : argv;
   // `-r` names the tree to scan; for worktrees that is the checkout root.
   let rootGiven = false;
   for (let i = 0; i < args.length; i++) {
@@ -104,7 +112,9 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
       case "-w": case "--weeks": o.weeks = Number(args[++i]); break;
       case "-d": case "--days": {
         const n = Number(args[++i]);
-        if (o.worktrees) o.worktreeDays = n; else o.cargoDays = n;
+        if (o.worktrees) o.worktreeDays = n;
+        else if (o.sims) o.simDays = n;
+        else o.cargoDays = n;
         break;
       }
       case "-r": case "--root": o.root = resolve(args[++i]); rootGiven = true; break;
@@ -113,6 +123,7 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
         if (/^\d+(\.\d+)?$/.test(a)) {
           if (o.cargoSweep) o.cargoDays = Number(a);
           else if (o.worktrees) o.worktreeDays = Number(a);
+          else if (o.sims) o.simDays = Number(a);
           else o.weeks = Number(a);
         }
         else die(`unknown argument: ${a}\nrun ${bold("purrge --help")}`);
@@ -121,6 +132,7 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
   if (!Number.isFinite(o.weeks) || o.weeks < 0) die("--weeks must be a non-negative number");
   if (!Number.isFinite(o.cargoDays) || o.cargoDays < 0) die("--days must be a non-negative number");
   if (!Number.isFinite(o.worktreeDays) || o.worktreeDays < 0) die("--days must be a non-negative number");
+  if (!Number.isFinite(o.simDays) || o.simDays < 0) die("--days must be a non-negative number");
 
   if (o.worktrees) {
     if (rootGiven) o.worktreeRoots = [o.root];
@@ -145,17 +157,26 @@ const config = await loadConfig();
 const opts = parseArgs(process.argv.slice(2), config);
 const showUi = !opts.json;
 
-/** What the run calls the things it lists. Worktrees are not projects. */
-const NOUN = opts.worktrees ? "worktree" : "project";
+/** What the run calls the things it lists. Worktrees are not projects, and a
+ * sims run lists five different kinds of thing at once. */
+const NOUN = opts.worktrees ? "worktree" : opts.sims ? "item" : "project";
 
 if (showUi) {
   const scope = opts.worktrees
     ? `${opts.worktreeRoots.join("\n")}\n${opts.all ? "every worktree" : `idle ${opts.worktreeDays}+ days`}`
+    : opts.sims
+    ? `simulators, runtimes & emulators\n${opts.all ? "every one" : `idle ${opts.simDays}+ days`}`
     : `${opts.root}\n${opts.cargoSweep ? `cargo targets idle ${opts.cargoDays}+ days` : opts.all ? "every project" : `idle ${opts.weeks}+ weeks`}`;
   await ui.banner("purrge", dim(`${scope} · min ${humanBytes(opts.min)}`));
 }
 
-const ageDays = opts.cargoSweep ? opts.cargoDays : opts.worktrees ? opts.worktreeDays : opts.weeks * 7;
+const ageDays = opts.cargoSweep
+  ? opts.cargoDays
+  : opts.worktrees
+    ? opts.worktreeDays
+    : opts.sims
+      ? opts.simDays
+      : opts.weeks * 7;
 const cutoff = Date.now() - ageDays * 86_400_000;
 const worthPurging = (p: Project) => p.bytes >= opts.min && (opts.all || p.mtime < cutoff);
 
@@ -164,22 +185,27 @@ const projects: Project[] = opts.cargoSweep
   ? await findCargoTargets(opts.root)
   : opts.worktrees
     ? await scanWorktreesWithPreview(opts.worktreeRoots, showUi, worthPurging)
-    : await scanWithPreview(opts.root, showUi, worthPurging);
+    : opts.sims
+      ? await scanSimsWithPreview(showUi, worthPurging)
+      : await scanWithPreview(opts.root, showUi, worthPurging);
 const elapsed = (performance.now() - started) / 1000;
 
 let stale = projects.filter(worthPurging).sort((a, b) => b.bytes - a.bytes);
 const worthCount = stale.length;
 
-// Worktrees holding unsaved work are shown, then set aside: removing one throws
-// away edits or commits that exist nowhere else. `--force` opts back in.
-const risky = opts.worktrees && !opts.force ? (stale as Worktree[]).filter((w) => !isSafe(w)) : [];
-if (risky.length) stale = stale.filter((p) => isSafe(p as Worktree));
+// Anything whose removal would take something else down with it is shown, then
+// set aside: a worktree holding edits or commits that exist nowhere else, a
+// simulator runtime other simulators are cut from. `--force` opts back in.
+const risky = opts.force ? [] : stale.filter((p) => heldBack(p));
+if (risky.length) stale = stale.filter((p) => !heldBack(p));
 
 if (opts.json) {
   console.log(JSON.stringify(
     opts.worktrees
       ? { roots: opts.worktreeRoots, scanned: projects.length, worktrees: stale, heldBack: risky }
-      : { root: opts.root, scanned: projects.length, projects: stale },
+      : opts.sims
+        ? { scanned: projects.length, sims: stale, heldBack: risky }
+        : { root: opts.root, scanned: projects.length, projects: stale },
     null,
     2,
   ));
@@ -192,11 +218,11 @@ await ui.note(
 
 if (risky.length) {
   console.log("");
-  for (const w of risky) {
-    console.log(`  ${dim("·")} ${rel(w.dir)} ${dim(`held back — ${riskLabel(w)}`)}`);
+  for (const p of risky) {
+    console.log(`  ${dim("·")} ${label(p)} ${dim(`held back — ${heldBack(p)}`)}`);
   }
   await ui.note(
-    `${plural(risky.length, "worktree")} kept back — ${bold("--force")} to include ${risky.length === 1 ? "it" : "them"}.`,
+    `${plural(risky.length, NOUN)} kept back — ${bold("--force")} to include ${risky.length === 1 ? "it" : "them"}.`,
   );
 }
 
@@ -206,17 +232,21 @@ if (!stale.length) {
 }
 
 const total = stale.reduce((n, p) => n + p.bytes, 0);
-const nameW = Math.max(...stale.map((p) => rel(p.dir).length));
+const nameW = Math.max(...stale.map((p) => label(p).length));
 const sizeW = Math.max(...stale.map((p) => humanBytes(p.bytes).length));
 
 const rows = stale.map((p) => ({
   value: p,
   bytes: p.bytes,
   cells: [
-    rel(p.dir).padEnd(nameW),
+    label(p).padEnd(nameW),
     humanBytes(p.bytes).padStart(sizeW),
     humanAge(p.mtime).padStart(5),
-    opts.worktrees ? describe(p as Worktree) : [...new Set(p.artifacts.map((a) => a.name))].join(" "),
+    opts.worktrees
+      ? describe(p as Worktree)
+      : opts.sims
+        ? dim((p as Sim).detail)
+        : [...new Set(p.artifacts.map((a) => a.name))].join(" "),
   ],
 }));
 
@@ -248,8 +278,8 @@ if (!chosen.length) {
 const chosenBytes = chosen.reduce((n, p) => n + p.bytes, 0);
 const dirCount = chosen.reduce((n, p) => n + p.artifacts.length, 0);
 
-const unit = opts.worktrees
-  ? plural(chosen.length, "worktree")
+const unit = opts.worktrees || opts.sims
+  ? plural(chosen.length, NOUN)
   : plural(dirCount, "directory", "directories");
 
 if (opts.dryRun) {
@@ -277,22 +307,26 @@ await mapLimit(chosen, 6, async (p) => {
   const targets = await mapLimit(p.artifacts, 4, async (a) => {
     try {
       if (opts.worktrees) await removeWorktree(p as Worktree);
+      else if (opts.sims) await removeSim(p as Sim);
       else await rm(a.path, { recursive: true, force: true });
       return a.bytes;
     } catch (err) {
       failed++;
-      console.log(`  ${red("✗")} ${rel(p.dir)}/${a.name} — ${(err as Error).message}`);
+      const what = opts.worktrees || opts.sims ? label(p) : `${rel(p.dir)}/${a.name}`;
+      console.log(`  ${red("✗")} ${what} — ${(err as Error).message}`);
       return 0;
     }
   });
   const sum = targets.reduce((n, b) => n + b, 0);
   freed += sum;
-  console.log(`  ${green("✓")} ${rel(p.dir).padEnd(nameW)}  ${dim(humanBytes(sum).padStart(9))}`);
+  console.log(`  ${green("✓")} ${label(p).padEnd(nameW)}  ${dim(humanBytes(sum).padStart(9))}`);
 });
 
 await ui.result(
   failed
-    ? `Freed ${humanBytes(freed)} — ${plural(failed, opts.worktrees ? "worktree" : "directory", opts.worktrees ? "worktrees" : "directories")} refused to budge.`
+    ? `Freed ${humanBytes(freed)} — ${
+        opts.worktrees || opts.sims ? plural(failed, NOUN) : plural(failed, "directory", "directories")
+      } refused to budge.`
     : `Freed ${humanBytes(freed)}. 🐱`,
   !failed,
 );
@@ -314,6 +348,18 @@ async function scanWithPreview(
 ): Promise<Project[]> {
   if (!withPreview || !ui.INTERACTIVE) return findProjects(root);
   return livePreview(basename(root) || root, matches, (onHit) => findProjects(root, onHit));
+}
+
+/**
+ * Simulators come from tooling rather than a walk, but sizing each device and
+ * system image is the same `du` wait, so they stream in the same way.
+ */
+async function scanSimsWithPreview(
+  withPreview: boolean,
+  matches: (p: Project) => boolean,
+): Promise<Sim[]> {
+  if (!withPreview || !ui.INTERACTIVE) return findSims();
+  return livePreview("simulators", matches, (onHit) => findSims(onHit));
 }
 
 /** The same walk-and-show treatment for worktree roots. */
@@ -405,6 +451,21 @@ async function removeWorktree(w: Worktree) {
   }
   // No parent repo to prune means the pointer, wherever it is, stays stale.
   throw new Error(stderr.trim().split("\n").pop() || "git worktree remove failed");
+}
+
+/**
+ * Why this one is being set aside, or null when it can go. Only the two modes
+ * that can take something else down with them have anything to say.
+ */
+function heldBack(p: Project): string | null {
+  if (opts.worktrees) return isSafe(p as Worktree) ? null : riskLabel(p as Worktree);
+  if (opts.sims) return simIsSafe(p as Sim) ? null : (p as Sim).risk;
+  return null;
+}
+
+/** How a row is named: a path for the things that are one, a name otherwise. */
+function label(p: Project): string {
+  return opts.sims ? (p as Sim).label : rel(p.dir);
 }
 
 /** Branch (or short sha) plus whatever is unsafe about it. */

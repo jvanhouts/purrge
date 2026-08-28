@@ -33,6 +33,10 @@ that a bare spinner wastes the wait.
 The footer total is live too: it recounts as you tick rows, so you can see what
 a selection actually buys you before committing to it.
 
+Build artifacts are not the only thing accumulating: `purrge sims` does the
+same job for iOS simulators, their runtimes, Xcode device support and Android
+emulators, none of which live anywhere near a project.
+
 ## Install
 
 Install from npm (purrge uses Bun as its runtime):
@@ -82,16 +86,17 @@ bun pm cache rm                        # or nuke the cache, then re-run
 purrge [weeks] [options]
 purrge cargo sweep [options]
 purrge worktrees [days] [options]
+purrge sims [days] [options]
 
   -w, --weeks <n>   only projects untouched for n+ weeks (default 8)
-  -d, --days <n>    cargo sweep / worktree age threshold in days (default 14)
+  -d, --days <n>    cargo sweep / worktree / sim age threshold in days
   -r, --root <dir>  directory to scan (default: cwd)
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
   -y, --yes         no prompts, purge everything listed
   -n, --dry-run     list what would go, delete nothing
   -j, --json        machine-readable output, never deletes
-  -f, --force       worktrees: include ones with unsaved work
+  -f, --force       include ones held back as unsafe or in use
 ```
 
 ```sh
@@ -102,6 +107,8 @@ purrge cargo sweep        # remove Cargo targets untouched for 14+ days
 purrge cargo sweep -n     # preview stale Cargo/Tauri build outputs
 purrge worktrees          # remove git worktrees idle for 14+ days
 purrge worktrees 30 -n    # preview worktrees idle for 30+ days
+purrge sims               # iOS simulators & Android emulators idle 30+ days
+purrge sims 90 -n         # preview the ones untouched for 90+ days
 ```
 
 ## Worktrees
@@ -144,6 +151,64 @@ the repo's `.git/worktrees` bookkeeping goes with it and `git worktree list`
 stops advertising a path that is no longer there. If git refuses, purrge deletes
 the directory and runs `git worktree prune` instead.
 
+## Simulators and emulators
+
+`purrge sims` goes after the phone tooling, which is the one pile that never
+shows up in a project scan — the devices live under `~/Library/Developer`, the
+runtimes under `/Library`, the AVDs under `~/.android`. It is usually the
+biggest single win on a machine that builds for phones: two stale runtimes
+outweigh every `node_modules` you own.
+
+```
+🐱 purrge
+   simulators, runtimes & emulators
+   idle 30+ days · min 10 MB
+
+22 items scanned in 1.1s · 20 worth purging
+
+  · iOS 26.5 runtime                            held back — used by 11 sims
+  · android-35 google_apis_playstore arm64-v8a  held back — used by 1 avd
+2 items kept back — --force to include them.
+
+❯ [✓] iOS 18.3 runtime             8.1 GB  never  runtime 18.3.1
+  [✓] iPhone17,1 26.3.1 (23D8133)  5.5 GB    4mo  iOS device support
+  [✓] Medium Phone API 35          4.8 GB    3mo  avd android-35
+  [ ] iPhone 17 Pro                2.3 GB    2mo  iOS 26.5
+```
+
+Five kinds of thing, all of them regenerable:
+
+- *simulators* — one directory per simulated device, from
+  `xcrun simctl list devices`. Age is when it was last booted.
+- *runtimes* — the downloaded iOS/watchOS/tvOS images simulators are cut from,
+  around 8 GB each. Only the ones simctl reports as `deletable` are offered;
+  the ones bundled inside Xcode are not yours to remove.
+- *device support* — `iPhone17,1 26.3.1 (23D8133)` and friends under
+  `~/Library/Developer/Xcode/*` DeviceSupport, copied off a physical device the
+  first time you plug it in on a given OS build and kept forever after. Xcode
+  re-copies them on the next connect.
+- *AVDs* — Android virtual devices under `~/.android/avd`. The `.avd` directory
+  and its `.ini` pointer are found through the pointer, not by name: the two do
+  not have to match, and often don't.
+- *system images* — `<sdk>/system-images/<api>/<tag>/<abi>`, what an AVD is cut
+  from.
+
+**What it holds back.** Removing a runtime does not remove the simulators cut
+from it — it leaves them behind, unavailable — and the same goes for a system
+image an AVD still names. Both are listed with a count of what depends on them
+and then set aside; a booted simulator is set aside too, since simctl will
+refuse to delete it. `--force` includes them anyway.
+
+**How it removes them.** Through the tool that created it wherever there is
+one: `simctl delete` and `simctl runtime delete` so CoreSimulator's own device
+index goes with the directory, `avdmanager delete avd` so the pointer file goes
+with the AVD. If the tooling is missing or refuses, purrge deletes the same
+paths directly. Device support and system images are plain directories and have
+never had anything else to update.
+
+`ANDROID_AVD_HOME`, `ANDROID_SDK_ROOT` and `ANDROID_HOME` are honoured. On
+Linux the iOS half finds nothing and stays quiet.
+
 ## Configuration
 
 Machine-wide settings live in `~/.purrge/config.yml` — this is where the
@@ -154,6 +219,7 @@ about any one project:
 PURGE_STALE_WEEKS_AMOUNT: 8
 CARGO_SWEEP_STALE_DAYS_AMOUNT: 14
 WORKTREE_STALE_DAYS_AMOUNT: 14
+SIM_STALE_DAYS_AMOUNT: 30
 WORKTREE_ROOTS:
   - ~/.whiskers/worktrees
 ```
@@ -175,7 +241,9 @@ an environment variable is a comma- or colon-separated list.
 `PURGE_STALE_WEEKS_AMOUNT` controls the normal project purge age. `purrge cargo
 sweep` uses `CARGO_SWEEP_STALE_DAYS_AMOUNT` and detects regular Cargo projects
 as well as Tauri projects, including their `src-tauri/target` build output and
-bundles. `purrge worktrees` uses `WORKTREE_STALE_DAYS_AMOUNT`.
+bundles. `purrge worktrees` uses `WORKTREE_STALE_DAYS_AMOUNT`, and `purrge
+sims` uses `SIM_STALE_DAYS_AMOUNT` (default 30 — simulators live longer between
+uses than a branch does).
 
 ## How it decides
 
@@ -214,6 +282,10 @@ A ~20-project, 40 GB tree scans in under 4 seconds.
   reasoning applies to any lockfile-less dependency dir.
 - mtime is a proxy for "am I still working on this", not proof. `--dry-run`
   first if you're unsure.
+- Deleting an iOS runtime leaves every simulator cut from it in place but
+  unavailable; purrge holds those runtimes back, but `--force` does not.
+- `purrge sims` sizes device support and system images with `du`, so a first
+  run on a cold cache spends a second or two before anything appears.
 - A worktree's stashes live in the parent repo and survive it; its reflog does
   not. "Unmerged" is judged against branches, so a commit reachable only from
   another worktree's detached `HEAD` counts as unmerged.

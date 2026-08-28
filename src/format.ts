@@ -18,6 +18,9 @@ export function parseBytes(input: string): number {
 }
 
 export function humanAge(mtime: number, now = Date.now()): string {
+  // No usable timestamp — a runtime downloaded and never booted, say. Better
+  // said outright than rendered as a date in 1970.
+  if (!mtime) return "never";
   const days = Math.floor((now - mtime) / 86_400_000);
   if (days < 1) return "today";
   if (days < 14) return `${days}d`;

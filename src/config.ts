@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 export const DEFAULT_PURGE_STALE_WEEKS_AMOUNT = 8;
 export const DEFAULT_CARGO_SWEEP_STALE_DAYS_AMOUNT = 14;
 export const DEFAULT_WORKTREE_STALE_DAYS_AMOUNT = 14;
+export const DEFAULT_SIM_STALE_DAYS_AMOUNT = 30;
 export const DEFAULT_WORKTREE_ROOTS = ["~/.whiskers/worktrees"];
 
 /** `~/.purrge/config.yml` — settings that follow you between directories. */
@@ -14,6 +15,7 @@ export type Config = {
   PURGE_STALE_WEEKS_AMOUNT: number;
   CARGO_SWEEP_STALE_DAYS_AMOUNT: number;
   WORKTREE_STALE_DAYS_AMOUNT: number;
+  SIM_STALE_DAYS_AMOUNT: number;
   /** Directories holding linked git worktrees, absolute and tilde-expanded. */
   WORKTREE_ROOTS: string[];
 };
@@ -22,6 +24,7 @@ const NUMBER_KEYS = [
   "PURGE_STALE_WEEKS_AMOUNT",
   "CARGO_SWEEP_STALE_DAYS_AMOUNT",
   "WORKTREE_STALE_DAYS_AMOUNT",
+  "SIM_STALE_DAYS_AMOUNT",
 ] as const;
 
 /**
@@ -37,6 +40,7 @@ export async function loadConfig(cwd = process.cwd(), globalPath = GLOBAL_CONFIG
     PURGE_STALE_WEEKS_AMOUNT: DEFAULT_PURGE_STALE_WEEKS_AMOUNT,
     CARGO_SWEEP_STALE_DAYS_AMOUNT: DEFAULT_CARGO_SWEEP_STALE_DAYS_AMOUNT,
     WORKTREE_STALE_DAYS_AMOUNT: DEFAULT_WORKTREE_STALE_DAYS_AMOUNT,
+    SIM_STALE_DAYS_AMOUNT: DEFAULT_SIM_STALE_DAYS_AMOUNT,
     WORKTREE_ROOTS: DEFAULT_WORKTREE_ROOTS.map(expandHome),
   };
 

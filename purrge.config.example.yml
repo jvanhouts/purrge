@@ -9,6 +9,9 @@ CARGO_SWEEP_STALE_DAYS_AMOUNT: 14
 # `purrge worktrees [days]` — git worktree age threshold.
 WORKTREE_STALE_DAYS_AMOUNT: 14
 
+# `purrge sims [days]` — simulator, runtime, device support and AVD age threshold.
+SIM_STALE_DAYS_AMOUNT: 30
+
 # Where your linked git worktrees are checked out. `~` is expanded.
 WORKTREE_ROOTS:
   - ~/.whiskers/worktrees
