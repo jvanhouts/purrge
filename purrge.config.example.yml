@@ -15,3 +15,7 @@ SIM_STALE_DAYS_AMOUNT: 30
 # Where your linked git worktrees are checked out. `~` is expanded.
 WORKTREE_ROOTS:
   - ~/.whiskers/worktrees
+
+# Where your projects live, for `purrge stats` and the menu bar app. `~` is expanded.
+PROJECT_ROOTS:
+  - ~/Documents/projects

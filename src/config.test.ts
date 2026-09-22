@@ -10,6 +10,7 @@ afterEach(async () => {
   await Promise.all(temporaryDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   delete process.env.WORKTREE_ROOTS;
   delete process.env.WORKTREE_STALE_DAYS_AMOUNT;
+  delete process.env.PROJECT_ROOTS;
 });
 
 async function temporaryCwd() {
@@ -56,6 +57,17 @@ describe("loadConfig", () => {
 
     process.env.WORKTREE_ROOTS = "/x,/y:/x";
     expect((await loadConfig(cwd, NO_GLOBAL)).WORKTREE_ROOTS).toEqual(["/x", "/y"]);
+  });
+
+  test("PROJECT_ROOTS defaults to nothing and is parsed like WORKTREE_ROOTS", async () => {
+    const cwd = await temporaryCwd();
+    expect((await loadConfig(cwd, NO_GLOBAL)).PROJECT_ROOTS).toEqual([]);
+
+    await writeFile(join(cwd, "purrge.config.json"), JSON.stringify({ PROJECT_ROOTS: "~/code" }));
+    expect((await loadConfig(cwd, NO_GLOBAL)).PROJECT_ROOTS).toEqual([join(homedir(), "code")]);
+
+    process.env.PROJECT_ROOTS = "/a:/b";
+    expect((await loadConfig(cwd, NO_GLOBAL)).PROJECT_ROOTS).toEqual(["/a", "/b"]);
   });
 
   test("nonsense values are ignored rather than fatal", async () => {

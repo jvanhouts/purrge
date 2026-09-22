@@ -7,6 +7,8 @@ export const DEFAULT_CARGO_SWEEP_STALE_DAYS_AMOUNT = 14;
 export const DEFAULT_WORKTREE_STALE_DAYS_AMOUNT = 14;
 export const DEFAULT_SIM_STALE_DAYS_AMOUNT = 30;
 export const DEFAULT_WORKTREE_ROOTS = ["~/.whiskers/worktrees"];
+/** No sensible guess at where someone keeps their code, so nothing by default. */
+export const DEFAULT_PROJECT_ROOTS: string[] = [];
 
 /** `~/.purrge/config.yml` — settings that follow you between directories. */
 export const GLOBAL_CONFIG_PATH = join(homedir(), ".purrge", "config.yml");
@@ -18,6 +20,8 @@ export type Config = {
   SIM_STALE_DAYS_AMOUNT: number;
   /** Directories holding linked git worktrees, absolute and tilde-expanded. */
   WORKTREE_ROOTS: string[];
+  /** Directories `purrge stats` (and the menu bar app) sum projects under. */
+  PROJECT_ROOTS: string[];
 };
 
 const NUMBER_KEYS = [
@@ -26,6 +30,8 @@ const NUMBER_KEYS = [
   "WORKTREE_STALE_DAYS_AMOUNT",
   "SIM_STALE_DAYS_AMOUNT",
 ] as const;
+
+const ROOT_KEYS = ["WORKTREE_ROOTS", "PROJECT_ROOTS"] as const;
 
 /**
  * Settings, lowest precedence first:
@@ -42,6 +48,7 @@ export async function loadConfig(cwd = process.cwd(), globalPath = GLOBAL_CONFIG
     WORKTREE_STALE_DAYS_AMOUNT: DEFAULT_WORKTREE_STALE_DAYS_AMOUNT,
     SIM_STALE_DAYS_AMOUNT: DEFAULT_SIM_STALE_DAYS_AMOUNT,
     WORKTREE_ROOTS: DEFAULT_WORKTREE_ROOTS.map(expandHome),
+    PROJECT_ROOTS: DEFAULT_PROJECT_ROOTS.map(expandHome),
   };
 
   applyFile(config, await readYaml(globalPath));
@@ -53,10 +60,11 @@ export async function loadConfig(cwd = process.cwd(), globalPath = GLOBAL_CONFIG
       config[key] = Number(value);
     }
   }
-  const roots = process.env.WORKTREE_ROOTS;
-  if (roots !== undefined) {
+  for (const key of ROOT_KEYS) {
+    const roots = process.env[key];
+    if (roots === undefined) continue;
     const parsed = parseRoots(roots.split(/[,:]/));
-    if (parsed.length) config.WORKTREE_ROOTS = parsed;
+    if (parsed.length) config[key] = parsed;
   }
 
   return config;
@@ -72,10 +80,12 @@ function applyFile(config: Config, file: unknown) {
   }
 
   // A single string is accepted as shorthand for a one-entry list.
-  const roots = source.WORKTREE_ROOTS;
-  if (typeof roots === "string" || Array.isArray(roots)) {
-    const parsed = parseRoots(typeof roots === "string" ? [roots] : roots);
-    if (parsed.length) config.WORKTREE_ROOTS = parsed;
+  for (const key of ROOT_KEYS) {
+    const roots = source[key];
+    if (typeof roots === "string" || Array.isArray(roots)) {
+      const parsed = parseRoots(typeof roots === "string" ? [roots] : roots);
+      if (parsed.length) config[key] = parsed;
+    }
   }
 }
 

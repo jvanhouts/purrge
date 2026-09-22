@@ -19,6 +19,7 @@ import { findCargoTargets } from "./scan";
 import { loadConfig } from "./config";
 import { findWorktrees, isSafe, riskLabel, type Worktree } from "./worktrees";
 import { findSims, isSafe as simIsSafe, removeSim, type Sim } from "./sims";
+import { collectStats, type Summary } from "./stats";
 
 const HOME = homedir();
 
@@ -33,6 +34,7 @@ ${bold("USAGE")}
   purrge cargo sweep [options]
   purrge worktrees [days] [options]
   purrge sims [days] [options]
+  purrge stats [options]
 
 ${bold("OPTIONS")}
   -w, --weeks <n>   only projects untouched for n+ weeks (default from config, 8)
@@ -43,6 +45,7 @@ ${bold("OPTIONS")}
   -y, --yes         no prompts, purge everything listed
   -n, --dry-run     list what would go, delete nothing
   -j, --json        machine-readable output, never deletes
+      --stream      stats only: one JSON line per section, as each finishes
   -f, --force       include ones held back as unsafe or in use
   -h, --help        this
   -v, --version     version
@@ -53,9 +56,10 @@ ${bold("EXAMPLES")}
   purrge -a -j           ${dim("# inventory everything as JSON")}
   purrge worktrees 14    ${dim("# git worktrees idle for 14+ days")}
   purrge sims 30         ${dim("# simulators, runtimes and AVDs idle 30+ days")}
+  purrge stats -j        ${dim("# in-use vs stale totals: projects, worktrees, sims")}
 
 ${bold("CONFIG")}
-  ~/.purrge/config.yml   ${dim("# machine-wide settings, incl. WORKTREE_ROOTS")}
+  ~/.purrge/config.yml   ${dim("# machine-wide settings, incl. WORKTREE_ROOTS, PROJECT_ROOTS")}
   ./purrge.config.json   ${dim("# per-directory override")}
 `;
 
@@ -67,6 +71,7 @@ type Options = {
   yes: boolean;
   dryRun: boolean;
   json: boolean;
+  stream: boolean;
   cargoSweep: boolean;
   cargoDays: number;
   worktrees: boolean;
@@ -74,6 +79,8 @@ type Options = {
   worktreeRoots: string[];
   sims: boolean;
   simDays: number;
+  stats: boolean;
+  projectRoots: string[];
   force: boolean;
 };
 
@@ -86,6 +93,7 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
     yes: false,
     dryRun: false,
     json: false,
+    stream: false,
     cargoSweep: argv[0] === "cargo" && argv[1] === "sweep",
     cargoDays: config.CARGO_SWEEP_STALE_DAYS_AMOUNT,
     worktrees: WORKTREE_COMMANDS.has(argv[0]),
@@ -93,10 +101,12 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
     worktreeRoots: config.WORKTREE_ROOTS,
     sims: SIM_COMMANDS.has(argv[0]),
     simDays: config.SIM_STALE_DAYS_AMOUNT,
+    stats: argv[0] === "stats",
+    projectRoots: config.PROJECT_ROOTS,
     force: false,
   };
 
-  const args = o.cargoSweep ? argv.slice(2) : o.worktrees || o.sims ? argv.slice(1) : argv;
+  const args = o.cargoSweep ? argv.slice(2) : o.worktrees || o.sims || o.stats ? argv.slice(1) : argv;
   // `-r` names the tree to scan; for worktrees that is the checkout root.
   let rootGiven = false;
   for (let i = 0; i < args.length; i++) {
@@ -108,6 +118,7 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
       case "-y": case "--yes": o.yes = true; break;
       case "-n": case "--dry-run": o.dryRun = true; break;
       case "-j": case "--json": o.json = true; break;
+      case "--stream": o.json = o.stream = true; break;
       case "-f": case "--force": o.force = true; break;
       case "-w": case "--weeks": o.weeks = Number(args[++i]); break;
       case "-d": case "--days": {
@@ -134,6 +145,9 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
   if (!Number.isFinite(o.worktreeDays) || o.worktreeDays < 0) die("--days must be a non-negative number");
   if (!Number.isFinite(o.simDays) || o.simDays < 0) die("--days must be a non-negative number");
 
+  // Stats never falls back to cwd: the menu bar app has no meaningful one.
+  if (o.stats && rootGiven) o.projectRoots = [o.root];
+
   if (o.worktrees) {
     if (rootGiven) o.worktreeRoots = [o.root];
     if (!o.worktreeRoots.length) {
@@ -156,6 +170,11 @@ function die(msg: string): never {
 const config = await loadConfig();
 const opts = parseArgs(process.argv.slice(2), config);
 const showUi = !opts.json;
+
+if (opts.stats) {
+  await printStats();
+  process.exit(0);
+}
 
 /** What the run calls the things it lists. Worktrees are not projects, and a
  * sims run lists five different kinds of thing at once. */
@@ -332,6 +351,51 @@ await ui.result(
 );
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+async function printStats() {
+  const stats = await collectStats(
+    {
+      ...config,
+      PURGE_STALE_WEEKS_AMOUNT: opts.weeks,
+      WORKTREE_STALE_DAYS_AMOUNT: opts.worktreeDays,
+      SIM_STALE_DAYS_AMOUNT: opts.simDays,
+    },
+    opts.projectRoots,
+    opts.stream ? (update) => console.log(JSON.stringify(update)) : undefined,
+  );
+  if (opts.stream) return;
+  if (opts.json) {
+    console.log(JSON.stringify(stats, null, 2));
+    return;
+  }
+
+  const { projects, worktrees, devices, images } = stats;
+  console.log("");
+  if (projects.roots.length) {
+    console.log(`  ${bold("projects ")} ${bar(projects, "bytes", "staleBytes")}  ${humanBytes(projects.bytes)} ${
+      dim(`· ${humanBytes(projects.staleBytes)} idle ${projects.staleWeeks}+ weeks (${projects.staleCount} of ${projects.count})`)
+    }`);
+  } else {
+    console.log(`  ${bold("projects ")} ${dim(`no roots — set ${bold("PROJECT_ROOTS")} in ~/.purrge/config.yml, or pass ${bold("--root")}`)}`);
+  }
+  if (worktrees.roots.length) {
+    const heldBack = worktrees.heldBackCount ? `, ${worktrees.heldBackCount} held back` : "";
+    console.log(`  ${bold("worktrees")} ${bar(worktrees, "bytes", "staleBytes")}  ${humanBytes(worktrees.bytes)} ${
+      dim(`· ${humanBytes(worktrees.staleBytes)} idle ${worktrees.staleDays}+ days (${worktrees.staleCount} of ${worktrees.count}${heldBack})`)
+    }`);
+  }
+  console.log(`  ${bold("sims     ")} ${bar(devices, "count", "staleCount")}  ${plural(devices.count, "device")} ${
+    dim(`· ${devices.staleCount} idle ${devices.staleDays}+ days · ${humanBytes(images.bytes)} in runtimes & images`)
+  }`);
+  console.log(`\n  ${green("█")} ${dim("in use")}  ${pink("█")} ${dim("stale")}\n`);
+}
+
+/** A fixed-width bar, green for what is in use and pink for what has gone stale. */
+function bar(s: Summary, total: "bytes" | "count", stale: "staleBytes" | "staleCount", width = 24): string {
+  if (!s[total]) return dim("░".repeat(width));
+  const staleCells = Math.round((s[stale] / s[total]) * width);
+  return green("█".repeat(width - staleCells)) + pink("█".repeat(staleCells));
+}
 
 /**
  * Walk the tree, showing matches in a preview list as they are discovered.
