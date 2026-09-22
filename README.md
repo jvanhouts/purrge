@@ -87,6 +87,7 @@ purrge [weeks] [options]
 purrge cargo sweep [options]
 purrge worktrees [days] [options]
 purrge sims [days] [options]
+purrge stats [options]
 
   -w, --weeks <n>   only projects untouched for n+ weeks (default 8)
   -d, --days <n>    cargo sweep / worktree / sim age threshold in days
@@ -96,6 +97,7 @@ purrge sims [days] [options]
   -y, --yes         no prompts, purge everything listed
   -n, --dry-run     list what would go, delete nothing
   -j, --json        machine-readable output, never deletes
+      --stream      stats only: one JSON line per section, as each finishes
   -f, --force       include ones held back as unsafe or in use
 ```
 
@@ -109,6 +111,7 @@ purrge worktrees          # remove git worktrees idle for 14+ days
 purrge worktrees 30 -n    # preview worktrees idle for 30+ days
 purrge sims               # iOS simulators & Android emulators idle 30+ days
 purrge sims 90 -n         # preview the ones untouched for 90+ days
+purrge stats              # in use vs stale: projects, worktrees, sims
 ```
 
 ## Worktrees
@@ -209,6 +212,43 @@ never had anything else to update.
 `ANDROID_AVD_HOME`, `ANDROID_SDK_ROOT` and `ANDROID_HOME` are honoured. On
 Linux the iOS half finds nothing and stays quiet.
 
+## Stats and the menu bar app
+
+`purrge stats` deletes nothing. It reports how much there is and how much of
+it has gone stale: project artifacts under `PROJECT_ROOTS`, git worktrees under
+`WORKTREE_ROOTS`, and simulators and emulators.
+
+```
+  projects  ████████████████████████  14 GB · 232 MB idle 8+ weeks (6 of 22)
+  worktrees ████████████████████████  84 GB · 81 GB idle 14+ days (48 of 58, 20 held back)
+  sims      ████████████████████████  11 devices · 10 idle 30+ days · 18 GB in runtimes & images
+```
+
+`--json` gives the same numbers to anything that wants to draw them.
+`--stream` prints one JSON line per section as soon as that section's scan
+finishes. Simulators take about a second and a big worktree root takes half a
+minute, so nothing has to wait for the slowest scan. One such
+thing lives in this repo: **PurrgeBar**, a macOS menu bar app in
+[`apps/menubar`](apps/menubar). It shows a bar for each: green for in use, pink
+for stale. On the worktree bar, a dimmer pink marks stale worktrees that
+purrge holds back because they are dirty or unmerged. Each bar fills in as soon as its own scan is done. During a rescan, the
+previous numbers stay on screen. It rescans every 30 minutes, whenever
+`~/.purrge/config.yml` changes, and when you ask it to; a config change abandons
+a scan already in progress.
+
+```sh
+bun run app:install   # build PurrgeBar.app and copy it to ~/Applications
+bun run app           # just build it, into apps/menubar/build/
+bun run app:dev       # swift run against the working tree
+```
+
+It needs macOS 14+, Xcode or the Swift toolchain, and Bun to build. The app
+does not need Bun to run: the build compiles purrge into the app bundle with
+`bun build --compile`, and the app shells out to that copy. The app never
+decides what counts as stale; it draws whatever `purrge stats` reports.
+"Edit config…" in its menu opens `~/.purrge/config.yml` and creates it first if
+it is missing.
+
 ## Configuration
 
 Machine-wide settings live in `~/.purrge/config.yml` — this is where the
@@ -222,6 +262,8 @@ WORKTREE_STALE_DAYS_AMOUNT: 14
 SIM_STALE_DAYS_AMOUNT: 30
 WORKTREE_ROOTS:
   - ~/.whiskers/worktrees
+PROJECT_ROOTS:
+  - ~/Documents/projects
 ```
 
 A `purrge.config.json` in the directory you run purrge from overrides the global
@@ -235,8 +277,8 @@ file per project, and environment variables override both:
 ```
 
 Lowest precedence first: defaults → `~/.purrge/config.yml` →
-`./purrge.config.json` → environment → command-line flags. `WORKTREE_ROOTS` as
-an environment variable is a comma- or colon-separated list.
+`./purrge.config.json` → environment → command-line flags. `WORKTREE_ROOTS` and
+`PROJECT_ROOTS` as environment variables are comma- or colon-separated lists.
 
 `PURGE_STALE_WEEKS_AMOUNT` controls the normal project purge age. `purrge cargo
 sweep` uses `CARGO_SWEEP_STALE_DAYS_AMOUNT` and detects regular Cargo projects

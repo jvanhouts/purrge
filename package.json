@@ -44,7 +44,10 @@
     "build": "bun build src/index.ts --outdir dist --target bun",
     "test": "bun test",
     "start": "bun run src/index.ts",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "app": "apps/menubar/scripts/bundle.sh",
+    "app:install": "apps/menubar/scripts/bundle.sh --install",
+    "app:dev": "bun build src/index.ts --compile --outfile dist/purrge-dev && PURRGE_BIN=$PWD/dist/purrge-dev swift run --package-path apps/menubar"
   },
   "publishConfig": {
     "access": "public"
