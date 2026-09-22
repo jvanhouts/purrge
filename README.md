@@ -54,7 +54,7 @@ bunx github:jvanhouts/purrge 8
 To pin a known version (recommended if you're sharing it around — see below):
 
 ```sh
-bunx github:jvanhouts/purrge#v0.4.0 8
+bunx github:jvanhouts/purrge#v0.4.1 8
 ```
 
 Or keep it on your PATH:
@@ -76,7 +76,7 @@ and silently gives you the old build — bunx has no `--force` or `--no-cache` f
 Two ways around it:
 
 ```sh
-bunx github:jvanhouts/purrge#v0.4.0    # pin a tag — a new tag is a new cache key
+bunx github:jvanhouts/purrge#v0.4.1    # pin a tag — a new tag is a new cache key
 bun pm cache rm                        # or nuke the cache, then re-run
 ```
 
