@@ -26,7 +26,7 @@ export type Stats = {
 };
 
 export type WorktreeSummary = Summary & {
-  /** Stale, but dirty or unmerged — purrge will not remove these without --force. */
+  /** Stale, but unmerged — purrge will not remove these without --force. */
   heldBackCount: number;
   heldBackBytes: number;
 };
@@ -99,7 +99,7 @@ export async function collectStats(
         },
       });
     }),
-    findWorktrees(config.WORKTREE_ROOTS).then((list) =>
+    findWorktrees(config.WORKTREE_ROOTS, undefined, roots).then((list) =>
       emit({
         worktrees: {
           roots: config.WORKTREE_ROOTS,

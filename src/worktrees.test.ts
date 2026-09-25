@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findWorktrees, isSafe, riskLabel } from "./worktrees";
+import { findProjects } from "./scan";
 
 const temporaryDirs: string[] = [];
 
@@ -102,7 +103,7 @@ describe("safety", () => {
     expect(riskLabel(w)).toBe("");
   });
 
-  test("uncommitted changes make it unsafe", async () => {
+  test("uncommitted changes are flagged but still safe", async () => {
     const { repo, root } = await makeRepo();
     const dir = await addWorktree(repo, root, "messy");
     await writeFile(join(dir, "README.md"), "edited");
@@ -110,7 +111,7 @@ describe("safety", () => {
     const [w] = await findWorktrees([root]);
 
     expect(w.dirty).toBe(true);
-    expect(isSafe(w)).toBe(false);
+    expect(isSafe(w)).toBe(true);
     expect(riskLabel(w)).toContain("dirty");
   });
 
@@ -140,5 +141,37 @@ describe("safety", () => {
     expect(w.head).toBe("side");
     expect(w.unmerged).toBe(false);
     expect(isSafe(w)).toBe(true);
+  });
+});
+
+describe("worktrees of repos under the project roots", () => {
+  test("are found next to the repo and inside it", async () => {
+    const { base, repo } = await makeRepo();
+    const sibling = await addWorktree(repo, base, "repo-feature");
+    const inside = await addWorktree(repo, join(repo, ".worktrees"), "inner");
+
+    const found = await findWorktrees([], undefined, [base]);
+
+    expect(found.map((w) => w.dir).sort()).toEqual([inside, sibling].sort());
+    expect(found.every((w) => w.repo === repo)).toBe(true);
+  });
+
+  test("are not listed twice when a worktree root also holds them", async () => {
+    const { base, repo, root } = await makeRepo();
+    await addWorktree(repo, root, "feature");
+
+    expect(await findWorktrees([root], undefined, [base])).toHaveLength(1);
+  });
+
+  test("are left out of the project scan, unless scanned from inside", async () => {
+    const { base, repo, root } = await makeRepo();
+    const dir = await addWorktree(repo, root, "feature");
+    for (const d of [repo, dir]) {
+      await mkdir(join(d, "node_modules", "x"), { recursive: true });
+      await writeFile(join(d, "node_modules", "x", "index.js"), "y".repeat(20_000));
+    }
+
+    expect((await findProjects(base)).map((p) => p.dir)).toEqual([repo]);
+    expect((await findProjects(dir)).map((p) => p.dir)).toEqual([dir]);
   });
 });

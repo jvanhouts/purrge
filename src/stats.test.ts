@@ -30,12 +30,12 @@ describe("summarizeWorktrees", () => {
     unmerged,
   });
 
-  test("only stale worktrees with something to lose are held back", () => {
+  test("only stale unmerged worktrees are held back — dirty ones are not", () => {
     const s = summarizeWorktrees(
       [worktree(10, 50), worktree(20, 50, true), worktree(40, 50, false, true), worktree(80, 200, true)],
       100,
     );
 
-    expect(s).toEqual({ count: 4, staleCount: 3, bytes: 150, staleBytes: 70, heldBackCount: 2, heldBackBytes: 60 });
+    expect(s).toEqual({ count: 4, staleCount: 3, bytes: 150, staleBytes: 70, heldBackCount: 1, heldBackBytes: 40 });
   });
 });

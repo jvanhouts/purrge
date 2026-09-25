@@ -16,7 +16,8 @@ import { LiveRegion, SPINNER } from "./live";
 import { pick } from "./picker";
 import { findProjects, type Project } from "./scan";
 import { findCargoTargets } from "./scan";
-import { loadConfig } from "./config";
+import { contractHome, loadConfig } from "./config";
+import { runConfigCommand } from "./config-cli";
 import { findWorktrees, isSafe, riskLabel, type Worktree } from "./worktrees";
 import { findSims, isSafe as simIsSafe, removeSim, type Sim } from "./sims";
 import { collectStats, type Summary } from "./stats";
@@ -31,6 +32,7 @@ ${bold(pink("purrge"))} ${dim(`v${pkg.version}`)} — cough up build artifacts f
 
 ${bold("USAGE")}
   purrge [weeks] [options]
+  purrge config [command]
   purrge cargo sweep [options]
   purrge worktrees [days] [options]
   purrge sims [days] [options]
@@ -39,7 +41,8 @@ ${bold("USAGE")}
 ${bold("OPTIONS")}
   -w, --weeks <n>   only projects untouched for n+ weeks (default from config, 8)
   -d, --days <n>    cargo sweep / worktree / sim age threshold in days
-  -r, --root <dir>  directory to scan (default: cwd)
+  -r, --root <dir>  directory to scan (default: PROJECT_ROOTS from config)
+  -c, --current     scan the current directory instead of the config ones
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
   -y, --yes         no prompts, purge everything listed
@@ -51,7 +54,8 @@ ${bold("OPTIONS")}
   -v, --version     version
 
 ${bold("EXAMPLES")}
-  purrge 8               ${dim("# projects idle for 8+ weeks, in cwd")}
+  purrge 8               ${dim("# projects idle for 8+ weeks, in your project dirs")}
+  purrge -c              ${dim("# just the current directory")}
   purrge -r ~/code -m 1G ${dim("# only the big stuff under ~/code")}
   purrge -a -j           ${dim("# inventory everything as JSON")}
   purrge worktrees 14    ${dim("# git worktrees idle for 14+ days")}
@@ -61,6 +65,16 @@ ${bold("EXAMPLES")}
 ${bold("CONFIG")}
   ~/.purrge/config.yml   ${dim("# machine-wide settings, incl. WORKTREE_ROOTS, PROJECT_ROOTS")}
   ./purrge.config.json   ${dim("# per-directory override")}
+  purrge config --help   ${dim("# view and change settings from the command line")}
+`;
+
+/** What a bare \`purrge\` says when it has nowhere to look. */
+const SHORT_USAGE = `
+${bold(pink("purrge"))} ${dim("— no project directories set")}
+
+  purrge --current                   ${dim("scan the current directory")}
+  purrge config add projects <dir>   ${dim("remember where your projects live")}
+  purrge --help                      ${dim("everything else")}
 `;
 
 type Options = {
@@ -81,6 +95,9 @@ type Options = {
   simDays: number;
   stats: boolean;
   projectRoots: string[];
+  /** \`-r\` was passed: scan exactly that, whatever the mode. */
+  rootGiven: boolean;
+  current: boolean;
   force: boolean;
 };
 
@@ -103,12 +120,13 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
     simDays: config.SIM_STALE_DAYS_AMOUNT,
     stats: argv[0] === "stats",
     projectRoots: config.PROJECT_ROOTS,
+    rootGiven: false,
+    current: false,
     force: false,
   };
 
   const args = o.cargoSweep ? argv.slice(2) : o.worktrees || o.sims || o.stats ? argv.slice(1) : argv;
   // `-r` names the tree to scan; for worktrees that is the checkout root.
-  let rootGiven = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     switch (a) {
@@ -120,6 +138,7 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
       case "-j": case "--json": o.json = true; break;
       case "--stream": o.json = o.stream = true; break;
       case "-f": case "--force": o.force = true; break;
+      case "-c": case "--c": case "--current": o.current = true; break;
       case "-w": case "--weeks": o.weeks = Number(args[++i]); break;
       case "-d": case "--days": {
         const n = Number(args[++i]);
@@ -128,7 +147,7 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
         else o.cargoDays = n;
         break;
       }
-      case "-r": case "--root": o.root = resolve(args[++i]); rootGiven = true; break;
+      case "-r": case "--root": o.root = resolve(args[++i]); o.rootGiven = true; break;
       case "-m": case "--min": o.min = parseBytes(args[++i]); break;
       default:
         if (/^\d+(\.\d+)?$/.test(a)) {
@@ -146,15 +165,31 @@ function parseArgs(argv: string[], config: Awaited<ReturnType<typeof loadConfig>
   if (!Number.isFinite(o.simDays) || o.simDays < 0) die("--days must be a non-negative number");
 
   // Stats never falls back to cwd: the menu bar app has no meaningful one.
-  if (o.stats && rootGiven) o.projectRoots = [o.root];
+  if (o.stats && o.rootGiven) o.projectRoots = [o.root];
 
   if (o.worktrees) {
-    if (rootGiven) o.worktreeRoots = [o.root];
-    if (!o.worktreeRoots.length) {
-      die(`no worktree roots configured\nset ${bold("WORKTREE_ROOTS")} in ~/.purrge/config.yml, or pass ${bold("--root")}`);
+    // `-r` means exactly that root; otherwise repos under the project dirs are
+    // asked for their worktrees too.
+    if (o.rootGiven) {
+      o.worktreeRoots = [o.root];
+      o.projectRoots = [];
+    }
+    if (!o.worktreeRoots.length && !o.projectRoots.length) {
+      die(`no worktree or project roots configured\nrun ${bold("purrge config add projects <dir>")}, or pass ${bold("--root")}`);
     }
     // Paths are printed relative to the first root; the rest fall back to ~/….
-    o.root = o.worktreeRoots[0];
+    o.root = o.worktreeRoots[0] ?? o.projectRoots[0];
+  }
+
+  // A plain run scans the configured project dirs unless told where to look.
+  if (!o.stats && !o.worktrees && !o.sims && !o.cargoSweep) {
+    if (o.rootGiven) o.projectRoots = [o.root];
+    else if (o.current) o.projectRoots = [process.cwd()];
+    else if (!o.projectRoots.length) {
+      console.log(SHORT_USAGE);
+      process.exit(argv.length ? 1 : 0);
+    }
+    o.root = o.projectRoots[0];
   }
   return o;
 }
@@ -167,9 +202,27 @@ function die(msg: string): never {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
+if (process.argv[2] === "config") {
+  await runConfigCommand(process.argv.slice(3));
+  process.exit(0);
+}
+
 const config = await loadConfig();
 const opts = parseArgs(process.argv.slice(2), config);
 const showUi = !opts.json;
+const PLAIN = !opts.stats && !opts.worktrees && !opts.sims && !opts.cargoSweep;
+
+// Dirs picked up from config rather than the command line get named, and
+// confirmed, before anything is scanned.
+if (PLAIN && !opts.rootGiven && !opts.current && showUi) {
+  const dirs = opts.projectRoots.map((d) => bold(contractHome(d))).join(", ");
+  console.log(`\n  purrge will run from config ${opts.projectRoots.length === 1 ? "directory" : "directories"}: ${dirs}`);
+  console.log(dim(`  to change, run ${bold("purrge config --help")} · ${bold("purrge -c")} for just this directory`));
+  if (!opts.yes && process.stdin.isTTY && !(await ui.confirm("Continue?", "Yes", "No"))) {
+    await ui.note("Nothing touched.");
+    process.exit(0);
+  }
+}
 
 if (opts.stats) {
   await printStats();
@@ -182,10 +235,10 @@ const NOUN = opts.worktrees ? "worktree" : opts.sims ? "item" : "project";
 
 if (showUi) {
   const scope = opts.worktrees
-    ? `${opts.worktreeRoots.join("\n")}\n${opts.all ? "every worktree" : `idle ${opts.worktreeDays}+ days`}`
+    ? `${[...opts.worktreeRoots, ...opts.projectRoots.map((d) => `${d} ${dim("(repos)")}`)].join("\n")}\n${opts.all ? "every worktree" : `idle ${opts.worktreeDays}+ days`}`
     : opts.sims
     ? `simulators, runtimes & emulators\n${opts.all ? "every one" : `idle ${opts.simDays}+ days`}`
-    : `${opts.root}\n${opts.cargoSweep ? `cargo targets idle ${opts.cargoDays}+ days` : opts.all ? "every project" : `idle ${opts.weeks}+ weeks`}`;
+    : `${(PLAIN ? opts.projectRoots : [opts.root]).join("\n")}\n${opts.cargoSweep ? `cargo targets idle ${opts.cargoDays}+ days` : opts.all ? "every project" : `idle ${opts.weeks}+ weeks`}`;
   await ui.banner("purrge", dim(`${scope} · min ${humanBytes(opts.min)}`));
 }
 
@@ -203,17 +256,17 @@ const started = performance.now();
 const projects: Project[] = opts.cargoSweep
   ? await findCargoTargets(opts.root)
   : opts.worktrees
-    ? await scanWorktreesWithPreview(opts.worktreeRoots, showUi, worthPurging)
+    ? await scanWorktreesWithPreview(opts.worktreeRoots, opts.projectRoots, showUi, worthPurging)
     : opts.sims
       ? await scanSimsWithPreview(showUi, worthPurging)
-      : await scanWithPreview(opts.root, showUi, worthPurging);
+      : await scanWithPreview(opts.projectRoots, showUi, worthPurging);
 const elapsed = (performance.now() - started) / 1000;
 
 let stale = projects.filter(worthPurging).sort((a, b) => b.bytes - a.bytes);
 const worthCount = stale.length;
 
 // Anything whose removal would take something else down with it is shown, then
-// set aside: a worktree holding edits or commits that exist nowhere else, a
+// set aside: a worktree holding commits that exist nowhere else, a
 // simulator runtime other simulators are cut from. `--force` opts back in.
 const risky = opts.force ? [] : stale.filter((p) => heldBack(p));
 if (risky.length) stale = stale.filter((p) => !heldBack(p));
@@ -221,10 +274,10 @@ if (risky.length) stale = stale.filter((p) => !heldBack(p));
 if (opts.json) {
   console.log(JSON.stringify(
     opts.worktrees
-      ? { roots: opts.worktreeRoots, scanned: projects.length, worktrees: stale, heldBack: risky }
+      ? { roots: opts.worktreeRoots, projectRoots: opts.projectRoots, scanned: projects.length, worktrees: stale, heldBack: risky }
       : opts.sims
         ? { scanned: projects.length, sims: stale, heldBack: risky }
-        : { root: opts.root, scanned: projects.length, projects: stale },
+        : { root: opts.root, roots: PLAIN ? opts.projectRoots : [opts.root], scanned: projects.length, projects: stale },
     null,
     2,
   ));
@@ -378,7 +431,7 @@ async function printStats() {
   } else {
     console.log(`  ${bold("projects ")} ${dim(`no roots — set ${bold("PROJECT_ROOTS")} in ~/.purrge/config.yml, or pass ${bold("--root")}`)}`);
   }
-  if (worktrees.roots.length) {
+  if (worktrees.roots.length || projects.roots.length) {
     const heldBack = worktrees.heldBackCount ? `, ${worktrees.heldBackCount} held back` : "";
     console.log(`  ${bold("worktrees")} ${bar(worktrees, "bytes", "staleBytes")}  ${humanBytes(worktrees.bytes)} ${
       dim(`· ${humanBytes(worktrees.staleBytes)} idle ${worktrees.staleDays}+ days (${worktrees.staleCount} of ${worktrees.count}${heldBack})`)
@@ -406,12 +459,22 @@ function bar(s: Summary, total: "bytes" | "count", stale: "staleBytes" | "staleC
  * timer, and erased once the real list takes over.
  */
 async function scanWithPreview(
-  root: string,
+  roots: string[],
   withPreview: boolean,
   matches: (p: Project) => boolean,
 ): Promise<Project[]> {
-  if (!withPreview || !ui.INTERACTIVE) return findProjects(root);
-  return livePreview(basename(root) || root, matches, (onHit) => findProjects(root, onHit));
+  // Nested roots would find the same project twice.
+  const scanAll = async (onHit?: (p: Project) => void) => {
+    const seen = new Set<string>();
+    const found = (await Promise.all(roots.map((r) => findProjects(r, onHit && ((p) => {
+      if (!seen.has(p.dir)) { seen.add(p.dir); onHit(p); }
+    }))))).flat();
+    const unique = new Map(found.map((p) => [p.dir, p]));
+    return [...unique.values()];
+  };
+  if (!withPreview || !ui.INTERACTIVE) return scanAll();
+  const label = roots.length === 1 ? basename(roots[0]) || roots[0] : plural(roots.length, "directory", "directories");
+  return livePreview(label, matches, scanAll);
 }
 
 /**
@@ -426,15 +489,17 @@ async function scanSimsWithPreview(
   return livePreview("simulators", matches, (onHit) => findSims(onHit));
 }
 
-/** The same walk-and-show treatment for worktree roots. */
+/** The same walk-and-show treatment for worktree roots and project repos. */
 async function scanWorktreesWithPreview(
   roots: string[],
+  projectRoots: string[],
   withPreview: boolean,
   matches: (p: Project) => boolean,
 ): Promise<Worktree[]> {
-  if (!withPreview || !ui.INTERACTIVE) return findWorktrees(roots);
-  const label = roots.length === 1 ? basename(roots[0]) || roots[0] : plural(roots.length, "root");
-  return livePreview(label, matches, (onHit) => findWorktrees(roots, onHit));
+  if (!withPreview || !ui.INTERACTIVE) return findWorktrees(roots, undefined, projectRoots);
+  const all = [...roots, ...projectRoots];
+  const label = all.length === 1 ? basename(all[0]) || all[0] : plural(all.length, "root");
+  return livePreview(label, matches, (onHit) => findWorktrees(roots, onHit, projectRoots));
 }
 
 async function livePreview<T extends Project>(

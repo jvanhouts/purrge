@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export const DEFAULT_PURGE_STALE_WEEKS_AMOUNT = 8;
 export const DEFAULT_CARGO_SWEEP_STALE_DAYS_AMOUNT = 14;
@@ -24,14 +24,18 @@ export type Config = {
   PROJECT_ROOTS: string[];
 };
 
-const NUMBER_KEYS = [
+export const NUMBER_KEYS = [
   "PURGE_STALE_WEEKS_AMOUNT",
   "CARGO_SWEEP_STALE_DAYS_AMOUNT",
   "WORKTREE_STALE_DAYS_AMOUNT",
   "SIM_STALE_DAYS_AMOUNT",
 ] as const;
 
-const ROOT_KEYS = ["WORKTREE_ROOTS", "PROJECT_ROOTS"] as const;
+export const ROOT_KEYS = ["WORKTREE_ROOTS", "PROJECT_ROOTS"] as const;
+
+export type NumberKey = (typeof NUMBER_KEYS)[number];
+export type RootKey = (typeof ROOT_KEYS)[number];
+export type ConfigKey = NumberKey | RootKey;
 
 /**
  * Settings, lowest precedence first:
@@ -121,4 +125,27 @@ async function readJson(path: string): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+/** `/Users/you/code` → `~/code`, which is how a person would write it. */
+export function contractHome(path: string): string {
+  const home = homedir();
+  if (path === home) return "~";
+  return path.startsWith(home + "/") ? `~${path.slice(home.length)}` : path;
+}
+
+/**
+ * The global file as written, not merged with anything — what `purrge config`
+ * edits. Keys purrge does not know are kept so a write never loses them.
+ */
+export async function readGlobalConfig(path = GLOBAL_CONFIG_PATH): Promise<Record<string, unknown>> {
+  const file = await readYaml(path);
+  return file && typeof file === "object" && !Array.isArray(file) ? { ...(file as Record<string, unknown>) } : {};
+}
+
+/** Comments in a hand-edited file do not survive this; the values do. */
+export async function writeGlobalConfig(file: Record<string, unknown>, path = GLOBAL_CONFIG_PATH) {
+  await mkdir(dirname(path), { recursive: true });
+  const body = Object.keys(file).length ? Bun.YAML.stringify(file, null, 2) : "";
+  await writeFile(path, `# purrge settings — edit by hand or with \`purrge config\`.\n${body}${body.endsWith("\n") || !body ? "" : "\n"}`);
 }

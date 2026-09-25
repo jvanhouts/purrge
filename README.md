@@ -1,6 +1,8 @@
-# purrge 🐱
+# purrgatory 🐱
 
 Cough up the build artifacts your stale projects are sitting on.
+
+The command is `purrge` — this is where your stale projects wait to be cleared out.
 
 `purrge` walks a directory tree, finds every project, works out how long ago you
 last touched each one, measures what its `node_modules` / `.next` / `dist` / `Pods`
@@ -39,28 +41,27 @@ emulators, none of which live anywhere near a project.
 
 ## Install
 
-Install from npm (purrge uses Bun as its runtime):
+purrgatory runs on [Bun](https://bun.sh), so install that first if you haven't:
+`curl -fsSL https://bun.sh/install | bash`.
+
+Then put `purrge` on your PATH, pinned to a tag:
 
 ```sh
-npm install -g purrge
+bun install -g github:jvanhouts/purrge#v0.4.1
 ```
 
-Or run the repository directly with [Bun](https://bun.sh):
+That symlinks `purrge` into `~/.bun/bin`. To upgrade, re-run it with a newer tag.
+
+From npm, once published:
 
 ```sh
-bunx github:jvanhouts/purrge 8
+npm install -g purrgatory
 ```
 
-To pin a known version (recommended if you're sharing it around — see below):
+Or run it without installing anything:
 
 ```sh
 bunx github:jvanhouts/purrge#v0.4.1 8
-```
-
-Or keep it on your PATH:
-
-```sh
-bun add -g git+https://github.com/jvanhouts/purrge.git
 ```
 
 [gum](https://github.com/charmbracelet/gum) is optional but it's the nice half —
@@ -88,10 +89,12 @@ purrge cargo sweep [options]
 purrge worktrees [days] [options]
 purrge sims [days] [options]
 purrge stats [options]
+purrge config [command]
 
   -w, --weeks <n>   only projects untouched for n+ weeks (default 8)
   -d, --days <n>    cargo sweep / worktree / sim age threshold in days
-  -r, --root <dir>  directory to scan (default: cwd)
+  -r, --root <dir>  directory to scan (default: PROJECT_ROOTS from config)
+  -c, --current     scan the current directory instead
   -m, --min <size>  ignore projects below this size (default 10M)
   -a, --all         no age filter — list every project
   -y, --yes         no prompts, purge everything listed
@@ -102,7 +105,8 @@ purrge stats [options]
 ```
 
 ```sh
-purrge 8                  # projects idle for 8+ weeks, under cwd
+purrge 8                  # projects idle for 8+ weeks, in your project dirs
+purrge -c                 # just the current directory
 purrge -r ~/code -m 1G    # only the big stuff
 purrge -a -j | jq         # inventory everything, delete nothing
 purrge cargo sweep        # remove Cargo targets untouched for 14+ days
@@ -113,6 +117,11 @@ purrge sims               # iOS simulators & Android emulators idle 30+ days
 purrge sims 90 -n         # preview the ones untouched for 90+ days
 purrge stats              # in use vs stale: projects, worktrees, sims
 ```
+
+A plain `purrge` scans the directories in `PROJECT_ROOTS`. It names them and
+asks before it starts (`-y` skips the question). If none are set it prints a
+short usage note instead of guessing. Use `-c` for the current directory, or
+`-r <dir>` for any other one.
 
 ## Worktrees
 
@@ -128,26 +137,35 @@ carrying its own `node_modules`.
 53 worktrees scanned in 12.3s · 25 worth purging
 
   · voja-monorepo-feat-filter-traveler-lists   held back — dirty unmerged
-  · whiskers-main-7                            held back — dirty
-2 worktrees kept back — --force to include them.
+1 worktree kept back — --force to include it.
 
 ❯ [✓] whiskers-chat-refactor   7.5 GB    7d  @20f718a
   [✓] whiskers-main            3.7 GB   10d  settings-sections
 ```
 
-The roots to scan come from `WORKTREE_ROOTS` in the global config, or from
-`--root`. Age is the newest mtime of the worktree's own files — `node_modules`
+purrge looks for worktrees in two places. The first is the folders in
+`WORKTREE_ROOTS`, such as `~/.whiskers/worktrees`. The second is every repo
+under `PROJECT_ROOTS`: purrge asks each one where its worktrees are, so a
+checkout made with a plain `git worktree add` is found wherever it was put,
+next to the repo or inside it. `--root` scans only the folder you name.
+
+It only works in that direction. A normal `purrge` run skips linked worktrees
+it finds under the project directories, because removing a worktree is
+`purrge worktrees`' job. That also keeps `purrge stats` from counting the same
+bytes twice. Run `purrge -c` from inside a worktree to purge its build output
+alone.
+
+Age is the newest mtime of the worktree's own files — `node_modules`
 and other build output excluded, so reinstalling dependencies does not make a
 dead branch look alive.
 
 **What it refuses to touch.** A worktree is held back, listed but not offered
-up, when removing it would destroy work that exists nowhere else:
+up, when it is *unmerged*: a detached `HEAD` whose commits no branch contains.
+A worktree on a named branch is never flagged — the branch outlives the
+directory. `--force` includes them anyway.
 
-- *dirty* — uncommitted changes in the working tree.
-- *unmerged* — a detached `HEAD` whose commits no branch contains. A worktree
-  on a named branch is never flagged: the branch outlives the directory.
-
-`--force` includes them anyway.
+A *dirty* worktree, one with uncommitted changes, is offered up like any other
+but marked `dirty` in red in the picker, so you can untick it.
 
 **How it removes them.** Via `git worktree remove` in the parent repository, so
 the repo's `.git/worktrees` bookkeeping goes with it and `git worktree list`
@@ -231,7 +249,7 @@ minute, so nothing has to wait for the slowest scan. One such
 thing lives in this repo: **PurrgeBar**, a macOS menu bar app in
 [`apps/menubar`](apps/menubar). It shows a bar for each: green for in use, pink
 for stale. On the worktree bar, a dimmer pink marks stale worktrees that
-purrge holds back because they are dirty or unmerged. Each bar fills in as soon as its own scan is done. During a rescan, the
+purrge holds back because they are unmerged. Each bar fills in as soon as its own scan is done. During a rescan, the
 previous numbers stay on screen. It rescans every 30 minutes, whenever
 `~/.purrge/config.yml` changes, and when you ask it to; a config change abandons
 a scan already in progress.
@@ -275,6 +293,24 @@ file per project, and environment variables override both:
   "CARGO_SWEEP_STALE_DAYS_AMOUNT": 14
 }
 ```
+
+### From the command line
+
+`purrge config` shows every setting and where its value comes from, followed by
+the commands that change them. Changes go to `~/.purrge/config.yml`. The file
+is created if it is missing, and any comments in it are dropped on write.
+
+```sh
+purrge config add projects ~/code .   # add directories to PROJECT_ROOTS
+purrge config remove projects ~/code
+purrge config set weeks 12            # PURGE_STALE_WEEKS_AMOUNT
+purrge config unset worktrees         # back to the default
+purrge config get projects
+purrge config edit                    # open it in $EDITOR
+```
+
+The short key names are `projects`, `worktrees`, `weeks`, `cargo-days`,
+`worktree-days` and `sim-days`. The full names work too.
 
 Lowest precedence first: defaults → `~/.purrge/config.yml` →
 `./purrge.config.json` → environment → command-line flags. `WORKTREE_ROOTS` and

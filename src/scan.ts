@@ -1,5 +1,5 @@
-import { readdir, stat, lstat } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { readdir, readFile, stat, lstat } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { ARTIFACT_DIRS, GATED_ARTIFACT_DIRS, NO_DESCEND, SKIP_DIRS, TAURI_DIR } from "./artifacts";
 import { mapLimit } from "./concurrency";
 
@@ -36,6 +36,13 @@ export async function findProjects(
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return 0; // unreadable — not our problem
+    }
+
+    // A linked worktree belongs to `purrge worktrees`, which removes the whole
+    // checkout. Scanning it here too would count and offer the same bytes twice.
+    // Scanning from inside one is still allowed.
+    if (dir !== root && entries.some((e) => e.isFile() && e.name === ".git") && await isLinkedWorktree(dir)) {
+      return 0;
     }
 
     const artifactPaths: string[] = [];
@@ -101,6 +108,30 @@ export async function findProjects(
 
   await walk(root);
   return projects;
+}
+
+/**
+ * The `.git` file of a linked worktree points at the admin directory inside the
+ * parent repo: `<repo>/.git/worktrees/<name>`. A plain clone has a `.git`
+ * directory instead, and gets null.
+ */
+export async function readGitdir(dir: string): Promise<string | null> {
+  try {
+    const s = await stat(join(dir, ".git"));
+    if (!s.isFile()) return null;
+    const text = await readFile(join(dir, ".git"), "utf8");
+    const match = /^gitdir:\s*(.+)$/m.exec(text);
+    if (!match) return null;
+    return resolve(dir, match[1].trim());
+  } catch {
+    return null;
+  }
+}
+
+/** A submodule has a `.git` file too, but it points into `.git/modules/`. */
+export async function isLinkedWorktree(dir: string): Promise<boolean> {
+  const gitdir = await readGitdir(dir);
+  return gitdir !== null && /\/worktrees\/[^/]+\/?$/.test(gitdir);
 }
 
 async function findTauriTarget(dir: string, entries: import("node:fs").Dirent[]): Promise<string | null> {

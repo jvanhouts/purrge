@@ -1,5 +1,5 @@
 {
-  "name": "purrge",
+  "name": "purrgatory",
   "version": "0.4.1",
   "description": "Cough up the build artifacts your stale projects are sitting on",
   "type": "module",
@@ -44,6 +44,7 @@
     "build": "bun build src/index.ts --outdir dist --target bun",
     "test": "bun test",
     "start": "bun run src/index.ts",
+    "cli": "scripts/cli.sh",
     "prepublishOnly": "bun run build",
     "app": "apps/menubar/scripts/bundle.sh",
     "app:install": "apps/menubar/scripts/bundle.sh --install",

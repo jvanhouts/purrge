@@ -7,10 +7,10 @@
  * every worktree is inspected before it is offered up.
  */
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { ARTIFACT_DIRS, GATED_ARTIFACT_DIRS, SKIP_DIRS } from "./artifacts";
 import { mapLimit } from "./concurrency";
-import { dirSize } from "./scan";
+import { dirSize, isLinkedWorktree, readGitdir } from "./scan";
 import type { Project } from "./scan";
 
 export type Worktree = Project & {
@@ -24,30 +24,47 @@ export type Worktree = Project & {
   unmerged: boolean;
 };
 
-/** A worktree is safe to remove only when nothing would be lost with it. */
+/**
+ * A worktree is safe to remove unless it holds commits no branch has. Dirty
+ * ones are offered up — flagged in the picker, but uncommitted edits in an idle
+ * worktree are not worth holding the whole thing back for.
+ */
 export function isSafe(w: Worktree): boolean {
-  return !w.dirty && !w.unmerged;
+  return !w.unmerged;
 }
 
-/** Why a worktree is being held back, for display. */
+/** What is risky about a worktree, for display. */
 export function riskLabel(w: Worktree): string {
   const flags = [w.dirty && "dirty", w.unmerged && "unmerged"].filter(Boolean);
   return flags.join(" ");
 }
 
 /**
- * Find every linked worktree directly under each root.
+ * Find every linked worktree directly under each root, plus every worktree of
+ * every repo under the project roots.
  *
- * Worktrees are one level deep by convention, and the marker is a `.git` *file*
- * holding a gitdir pointer — a plain clone has a `.git` directory instead, and
- * is left well alone.
+ * Worktree roots are one level deep by convention, and the marker is a `.git`
+ * *file* holding a gitdir pointer — a plain clone has a `.git` directory
+ * instead, and is left well alone.
+ *
+ * Plain `git worktree add` puts a checkout wherever it was told to: next to the
+ * repo, inside it, anywhere. The repo keeps the path in
+ * `.git/worktrees/<name>/gitdir`, so the project roots are searched for repos
+ * and each one is asked where its worktrees are.
  */
 export async function findWorktrees(
   roots: string[],
   onWorktree?: (w: Worktree) => void,
+  projectRoots: string[] = [],
 ): Promise<Worktree[]> {
   const found: Worktree[] = [];
   const seen = new Set<string>();
+  const add = async (dir: string) => {
+    const worktree = await inspect(dir);
+    if (!worktree) return;
+    found.push(worktree);
+    onWorktree?.(worktree);
+  };
 
   for (const root of roots) {
     let entries;
@@ -63,15 +80,70 @@ export async function findWorktrees(
       .filter((dir) => !seen.has(dir) && seen.add(dir));
 
     // Sizing shells out to `du`; the git probes are cheap by comparison.
-    await mapLimit(dirs, 6, async (dir) => {
-      const worktree = await inspect(dir);
-      if (!worktree) return;
-      found.push(worktree);
-      onWorktree?.(worktree);
-    });
+    await mapLimit(dirs, 6, add);
+  }
+
+  for (const root of projectRoots) {
+    const repos = await findRepos(root);
+    const lists = await mapLimit(repos, 8, listWorktrees);
+    const dirs = lists.flat().filter((dir) => !seen.has(dir) && seen.add(dir));
+    await mapLimit(dirs, 6, add);
   }
 
   return found;
+}
+
+/**
+ * Every repo (a directory with a `.git` *directory*) under root. A repo is not
+ * searched further: its own worktrees are listed by git, wherever they are.
+ */
+async function findRepos(root: string): Promise<string[]> {
+  const repos: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isDirectory() && e.name === ".git")) {
+      repos.push(dir);
+      return;
+    }
+    if (entries.some((e) => e.isFile() && e.name === ".git")) return; // a worktree or submodule
+    const subdirs = entries
+      .filter((e) => e.isDirectory() && !SKIP_DIRS.has(e.name) && !ARTIFACT_DIRS.has(e.name) && !GATED_ARTIFACT_DIRS.has(e.name))
+      .map((e) => join(dir, e.name));
+    await mapLimit(subdirs, 16, walk);
+  }
+
+  await walk(root);
+  return repos;
+}
+
+/** Checkout paths of a repo's linked worktrees, from `.git/worktrees/<name>/gitdir`. */
+async function listWorktrees(repo: string): Promise<string[]> {
+  const admin = join(repo, ".git", "worktrees");
+  let names;
+  try {
+    names = await readdir(admin);
+  } catch {
+    return [];
+  }
+  const dirs = await mapLimit(names, 8, async (name) => {
+    try {
+      // `gitdir` holds `<checkout>/.git`. A checkout deleted by hand leaves the
+      // entry behind until `git worktree prune`; inspect() skips it.
+      const pointer = (await readFile(join(admin, name, "gitdir"), "utf8")).trim();
+      // Relative since git 2.48 with `worktree.useRelativePaths`.
+      const dir = dirname(resolve(admin, name, pointer));
+      return (await isLinkedWorktree(dir)) ? dir : null;
+    } catch {
+      return null;
+    }
+  });
+  return dirs.filter((d): d is string => d !== null);
 }
 
 async function inspect(dir: string): Promise<Worktree | null> {
@@ -100,23 +172,6 @@ async function inspect(dir: string): Promise<Worktree | null> {
     dirty,
     unmerged,
   };
-}
-
-/**
- * The `.git` file of a linked worktree points at the admin directory inside the
- * parent repo: `<repo>/.git/worktrees/<name>`.
- */
-async function readGitdir(dir: string): Promise<string | null> {
-  try {
-    const s = await stat(join(dir, ".git"));
-    if (!s.isFile()) return null; // a real clone, not a linked worktree
-    const text = await readFile(join(dir, ".git"), "utf8");
-    const match = /^gitdir:\s*(.+)$/m.exec(text);
-    if (!match) return null;
-    return resolve(dir, match[1].trim());
-  } catch {
-    return null;
-  }
 }
 
 function repoFromGitdir(gitdir: string): string | null {
