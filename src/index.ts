@@ -28,7 +28,7 @@ const WORKTREE_COMMANDS = new Set(["worktrees", "worktree", "wt"]);
 const SIM_COMMANDS = new Set(["sims", "sim", "simulators", "emulators"]);
 
 const HELP = `
-${bold(pink("purrge"))} ${dim(`v${pkg.version}`)} — cough up build artifacts from stale projects
+${bold(pink("purrge"))} ${dim(`v${pkg.version}`)} — clean up build artifacts from stale dev projects
 
 ${bold("USAGE")}
   purrge [weeks] [options]
@@ -613,4 +613,3 @@ function rel(dir: string): string {
   if (!r.startsWith("..")) return r;
   return dir.startsWith(HOME) ? `~${dir.slice(HOME.length)}` : dir;
 }
-
