@@ -47,7 +47,7 @@ purrgatory runs on [Bun](https://bun.sh), so install that first if you haven't:
 Then put `purrge` on your PATH, pinned to a tag:
 
 ```sh
-bun install -g github:jvanhouts/purrge#v0.4.1
+bun install -g github:jvanhouts/purrge#v0.5.0
 ```
 
 That symlinks `purrge` into `~/.bun/bin`. To upgrade, re-run it with a newer tag.
@@ -61,7 +61,7 @@ npm install -g purrgatory
 Or run it without installing anything:
 
 ```sh
-bunx github:jvanhouts/purrge#v0.4.1 8
+bunx github:jvanhouts/purrge#v0.5.0 8
 ```
 
 [gum](https://github.com/charmbracelet/gum) is optional but it's the nice half —
@@ -77,7 +77,7 @@ and silently gives you the old build — bunx has no `--force` or `--no-cache` f
 Two ways around it:
 
 ```sh
-bunx github:jvanhouts/purrge#v0.4.1    # pin a tag — a new tag is a new cache key
+bunx github:jvanhouts/purrge#v0.5.0    # pin a tag — a new tag is a new cache key
 bun pm cache rm                        # or nuke the cache, then re-run
 ```
 

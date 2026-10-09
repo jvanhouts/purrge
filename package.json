@@ -1,6 +1,6 @@
 {
   "name": "purrgatory",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Cough up the build artifacts your stale projects are sitting on",
   "type": "module",
   "main": "src/index.ts",
