@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { summarize, summarizeWorktrees } from "./stats";
+import { summarize, summarizeSims, summarizeWorktrees } from "./stats";
 import type { Project } from "./scan";
 import type { Worktree } from "./worktrees";
 
@@ -37,5 +37,18 @@ describe("summarizeWorktrees", () => {
     );
 
     expect(s).toEqual({ count: 4, staleCount: 3, bytes: 150, staleBytes: 70, heldBackCount: 1, heldBackBytes: 40 });
+  });
+});
+
+describe("summarizeSims", () => {
+  const sim = (bytes: number, mtime: number, risk: string | null = null) => ({
+    ...project(bytes, mtime),
+    kind: "runtime" as const, label: "iOS", detail: "", id: null, paths: [], risk,
+  });
+
+  test("stale images still in use by simulators are held back, not reclaimable", () => {
+    const s = summarizeSims([sim(8, 0), sim(15, 0, "used by 3 sims"), sim(4, 500)], 100);
+
+    expect(s).toEqual({ count: 3, staleCount: 2, bytes: 27, staleBytes: 23, heldBackCount: 1, heldBackBytes: 15 });
   });
 });

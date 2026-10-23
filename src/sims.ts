@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { mapLimit } from "./concurrency";
 import { dirSize } from "./scan";
 import type { Project } from "./scan";
+import { exec, lastLine, statusFor, type Issue, type ProviderStatus } from "./storage";
 
 export type SimKind = "sim" | "runtime" | "devicesupport" | "avd" | "sysimage";
 
@@ -48,22 +49,35 @@ const XCODE_DIR = join(HOME, "Library", "Developer", "Xcode");
  * machine, sized. The five collectors are independent, so they run together.
  */
 export async function findSims(onSim?: (s: Sim) => void): Promise<Sim[]> {
+  return (await scanSims(onSim)).sims;
+}
+
+export type SimScan = { sims: Sim[]; status: ProviderStatus; issues: Issue[] };
+
+/**
+ * `findSims`, plus what it could not see. A simctl that fails — inside a
+ * sandbox, say — used to look exactly like a machine with no simulators at
+ * all: zero devices, a few gigabytes of images. Now it says it failed.
+ */
+export async function scanSims(onSim?: (s: Sim) => void): Promise<SimScan> {
   const found: Sim[] = [];
+  const issues: Issue[] = [];
   const emit = (s: Sim) => {
     found.push(s);
     onSim?.(s);
   };
+  const issue = (i: Issue) => issues.push(i);
 
-  const devices = await listDevices();
+  const devices = await listDevices(issue);
   await Promise.all([
-    collectDevices(devices, emit),
-    collectRuntimes(devices, emit),
-    collectDeviceSupport(emit),
-    collectAvds(emit),
-    collectSystemImages(emit),
+    collectDevices(devices, emit, issue),
+    collectRuntimes(devices, emit, issue),
+    collectDeviceSupport(emit, issue),
+    collectAvds(emit, issue),
+    collectSystemImages(emit, issue),
   ]);
 
-  return found;
+  return { sims: found, status: statusFor(found, issues), issues };
 }
 
 // ── iOS simulators ───────────────────────────────────────────────────────────
@@ -109,16 +123,19 @@ export function parseDevices(json: unknown): Device[] {
   return out;
 }
 
-async function listDevices(): Promise<Device[]> {
-  const out = await xcrun(["simctl", "list", "devices", "--json"]);
-  return out ? parseDevices(safeJson(out)) : [];
+async function listDevices(onIssue: (i: Issue) => void): Promise<Device[]> {
+  const out = await simctl(["list", "devices", "--json"], onIssue);
+  if (out === null) return [];
+  const json = safeJson(out);
+  if (!json) onIssue({ code: "tool-failed", message: "simctl list devices returned unreadable JSON" });
+  return parseDevices(json);
 }
 
-async function collectDevices(devices: Device[], emit: (s: Sim) => void): Promise<void> {
+async function collectDevices(devices: Device[], emit: (s: Sim) => void, onIssue: (i: Issue) => void): Promise<void> {
   await mapLimit(devices, 8, async (d) => {
     // dataPath is `<device>/data`; the whole device directory is what goes.
     const dir = dirname(d.dataPath);
-    const bytes = (await dirSize(dir)) + d.logPathSize;
+    const bytes = (await dirSize(dir, onIssue)) + d.logPathSize;
     if (!bytes) return;
 
     const paths = [dir];
@@ -174,8 +191,8 @@ export function parseRuntimes(json: unknown): Runtime[] {
   return out;
 }
 
-async function collectRuntimes(devices: Device[], emit: (s: Sim) => void): Promise<void> {
-  const out = await xcrun(["simctl", "runtime", "list", "--json"]);
+async function collectRuntimes(devices: Device[], emit: (s: Sim) => void, onIssue: (i: Issue) => void): Promise<void> {
+  const out = await simctl(["runtime", "list", "--json"], onIssue);
   if (!out) return;
 
   for (const r of parseRuntimes(safeJson(out))) {
@@ -216,7 +233,7 @@ export function runtimeName(runtimeId: string): string {
  * OS build, and re-copied automatically if they are missing. One per OS update
  * per device, kept forever, a couple of gigabytes each.
  */
-async function collectDeviceSupport(emit: (s: Sim) => void): Promise<void> {
+async function collectDeviceSupport(emit: (s: Sim) => void, onIssue: (i: Issue) => void): Promise<void> {
   let platforms;
   try {
     platforms = await readdir(XCODE_DIR, { withFileTypes: true });
@@ -238,7 +255,7 @@ async function collectDeviceSupport(emit: (s: Sim) => void): Promise<void> {
 
     await mapLimit(entries.filter((e) => e.isDirectory()), 6, async (e) => {
       const dir = join(root.path, e.name);
-      const bytes = await dirSize(dir);
+      const bytes = await dirSize(dir, onIssue);
       if (!bytes) return;
       emit({
         kind: "devicesupport",
@@ -289,7 +306,7 @@ export function parseIni(text: string): Record<string, string> {
  * after whatever it was called when it was created — so the pointers are read
  * rather than assumed, and a directory nothing points at is still listed.
  */
-async function collectAvds(emit: (s: Sim) => void): Promise<void> {
+async function collectAvds(emit: (s: Sim) => void, onIssue: (i: Issue) => void): Promise<void> {
   const home = avdHome();
   let entries;
   try {
@@ -311,7 +328,7 @@ async function collectAvds(emit: (s: Sim) => void): Promise<void> {
   const dirs = entries.filter((e) => e.isDirectory() && e.name.endsWith(".avd"));
   await mapLimit(dirs, 4, async (e) => {
     const dir = join(home, e.name);
-    const bytes = await dirSize(dir);
+    const bytes = await dirSize(dir, onIssue);
     if (!bytes) return;
 
     const pointer = pointers.get(dir);
@@ -337,7 +354,7 @@ async function collectAvds(emit: (s: Sim) => void): Promise<void> {
  * shared by every AVD that names it. Deleting one out from under a live AVD
  * leaves an emulator that cannot boot, so images still referenced are held back.
  */
-async function collectSystemImages(emit: (s: Sim) => void): Promise<void> {
+async function collectSystemImages(emit: (s: Sim) => void, onIssue: (i: Issue) => void): Promise<void> {
   const root = join(sdkRoot(), "system-images");
   const inUse = await referencedSystemImages();
 
@@ -351,7 +368,7 @@ async function collectSystemImages(emit: (s: Sim) => void): Promise<void> {
   }
 
   await mapLimit(images, 4, async (img) => {
-    const bytes = await dirSize(img.dir);
+    const bytes = await dirSize(img.dir, onIssue);
     if (!bytes) return;
     const users = inUse.get(`system-images/${img.api}/${img.tag}/${img.abi}`) ?? 0;
     emit({
@@ -428,6 +445,24 @@ async function run(cmd: string[]): Promise<string | null> {
 }
 
 const xcrun = (args: string[]) => (process.platform === "darwin" ? run(["xcrun", ...args]) : Promise.resolve(null));
+
+/**
+ * simctl for inventory, with its failures kept. Off macOS there is no simctl
+ * and nothing to report; on macOS a missing or failing one is news, because
+ * the alternative is a confident zero.
+ */
+async function simctl(args: string[], onIssue: (i: Issue) => void): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  const r = await exec(["xcrun", "simctl", ...args]);
+  if (r.ok) return r.stdout;
+  // Command line tools without Xcode have xcrun, but no simctl to find.
+  onIssue(
+    r.missing || /unable to find utility/i.test(r.stderr)
+      ? { code: "missing-tool", message: "simctl not found — install Xcode for simulators" }
+      : { code: "tool-failed", message: `simctl ${args[0]} ${args[1] ?? ""} failed: ${lastLine(r.stderr, `exit ${r.code}`)}`.replace("  ", " ") },
+  );
+  return null;
+}
 
 async function avdmanager(args: string[]): Promise<boolean> {
   for (const bin of ["avdmanager", join(sdkRoot(), "cmdline-tools", "latest", "bin", "avdmanager")]) {

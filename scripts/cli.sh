@@ -10,10 +10,13 @@ BIN_DIR="${BUN_INSTALL:-$HOME/.bun}/bin"
 case "${1:-}" in
   update)
     # A global install (e.g. from GitHub) would win again on the next `bun add -g`.
-    if [ -e "${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/purrge" ]; then
-      echo "→ removing the global purrge install"
-      bun remove -g purrge >/dev/null
-    fi
+    # The package is `purrgatory`; `purrge` is only its command (and its old name).
+    for pkg in purrgatory purrge; do
+      if [ -e "${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/$pkg" ]; then
+        echo "→ removing the global $pkg install"
+        bun remove -g "$pkg" >/dev/null
+      fi
+    done
     chmod +x "$REPO/src/index.ts"
     mkdir -p "$BIN_DIR"
     ln -sfn "$REPO/src/index.ts" "$BIN_DIR/purrge"

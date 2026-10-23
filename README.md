@@ -88,6 +88,9 @@ purrge [weeks] [options]
 purrge cargo sweep [options]
 purrge worktrees [days] [options]
 purrge sims [days] [options]
+purrge caches | xcode | docker | tools [options]
+purrge doctor [--json] [--add-roots]
+purrge history
 purrge stats [options]
 purrge config [command]
 
@@ -115,7 +118,13 @@ purrge worktrees          # remove git worktrees idle for 14+ days
 purrge worktrees 30 -n    # preview worktrees idle for 30+ days
 purrge sims               # iOS simulators & Android emulators idle 30+ days
 purrge sims 90 -n         # preview the ones untouched for 90+ days
-purrge stats              # in use vs stale: projects, worktrees, sims
+purrge caches -n          # npm, Bun, Gradle, Yarn, CocoaPods… caches
+purrge xcode              # DerivedData per project; archives review-only
+purrge docker -n          # Docker build cache and unused images
+purrge tools              # Node, NDK, Rust and browser versions nothing pins
+purrge doctor             # why is the disk full? read-only
+purrge history            # what grew between scans
+purrge stats              # in use vs stale, free space, every provider
 ```
 
 A plain `purrge` scans the directories in `PROJECT_ROOTS`. It names them and
@@ -230,17 +239,102 @@ never had anything else to update.
 `ANDROID_AVD_HOME`, `ANDROID_SDK_ROOT` and `ANDROID_HOME` are honoured. On
 Linux the iOS half finds nothing and stays quiet.
 
+## Beyond your projects: caches, Xcode, Docker, tools
+
+Project artifacts are often the smaller part of a full disk. The rest sits in
+shared stores no project root contains. Four commands cover them, all with the
+same flags (`-n`, `-y`, `-j`, `-f`, `-m`) and the same picker:
+
+| Command | What it inventories | How it cleans |
+| --- | --- | --- |
+| `purrge caches` | npm `_cacache` and `_npx`, Bun's install cache, Gradle, Yarn Classic and Berry, CocoaPods, Coursier, NuGet, the Cargo registry, uv, Homebrew downloads | The owner's command where one exists (`npm cache clean --force`, `bun pm cache rm`, `yarn cache clean`, `pod cache clean --all`, `uv cache clean`, `dotnet nuget locals`), otherwise the store's directory. Installed global tools (`~/.bun/install/global`, `~/.cargo/bin`) are never touched |
+| `purrge xcode` | `DerivedData`, one row per project, named after its workspace; shared module caches; Archives | Deletes the DerivedData folder. Archives are review-only and go to the Trash when picked |
+| `purrge docker` | Build cache, images, containers and volumes, through `docker system df -v` | `docker builder prune`, `docker image rm`, `docker rm`, `docker volume rm` — never `docker system prune`, never the VM file |
+| `purrge tools` | Volta Node/npm/Yarn versions and downloads, Android NDKs and build tools, Rust toolchains, Playwright and Puppeteer browsers, Ollama models | `rustup toolchain uninstall`, `sdkmanager --uninstall`, `ollama rm`, or the version's directory |
+
+Each finding is one of three things:
+
+- **eligible** — offered up, ticked by default.
+- **held back** — listed with the reason and not offered, unless you pass
+  `--force`. Examples: npm's cache while an `npm install` runs, DerivedData
+  during an active build, an image a container uses, your default Node, a
+  version a project pins, the newest NDK.
+- **review-only** — Xcode archives (their dSYMs may be your only way to
+  symbolicate crashes), stopped containers, every Docker volume (an unattached
+  database volume can still be the only copy), Ollama models. `--yes` never
+  removes these. With `--force` they join the picker unticked, so only a
+  deliberate tick takes one.
+
+Clearing a cache wipes the whole store, and the reason column says so. It
+costs offline installs and a slower next install; directory age proves nothing
+about whether a cached package is used. Sizes are what `du` measured, so
+hardlinked stores and shared Docker layers can free less than they add up to.
+After a cleanup purrge reports free space before and after, as well as its
+estimate.
+
+Version pins are read from `package.json` `volta` fields, `.nvmrc`,
+`.node-version`, `rust-toolchain(.toml)` and Gradle's `ndkVersion` /
+`buildToolsVersion` under `PROJECT_ROOTS`. A project outside those roots cannot
+pin anything, so run `purrge doctor` first and add the roots it suggests.
+
+## Doctor and history
+
+`purrge doctor` deletes nothing. It starts from the disk itself instead of
+from what purrge already knows about:
+
+- free space, with a warning when it is below 10% or 20 GB
+- every provider, split into eligible, held back and review-only
+- **code roots you have not configured**: directories near the top of your home
+  that hold repos with build artifacts, sized with the same scanner, plus
+  apps that keep worktrees of their own under Application Support. It offers to
+  add them to your config, or `--add-roots` does it without asking
+- large artifacts in *active* projects. A 20 GB Tauri `target` in a project
+  you touched yesterday is rightly not stale, but it is worth knowing about
+- large locations no provider covers, with app state labelled as app state:
+  Notion, Cursor, Spotify, your photos
+- files over 1 GB, listed without judgement
+- locations it could not read. They are unknown, not empty. Grant your terminal
+  Full Disk Access to see them
+- what is left: OS-reported use minus what was measured, labelled
+  *unclassified* rather than explained away
+
+It takes a few minutes, mostly running `du` over your home directory.
+
+Every doctor run, and a `purrge stats` run at most every six hours, appends a
+line of sizes to `~/.purrge/history.jsonl`. File contents are never recorded.
+Cleanups are logged there too. `purrge history` compares the last two scans and
+reports what grew. Only scopes that were complete in both scans count as
+growth: a location that appears because Docker was running this time is
+"newly visible", not growth.
+
+**Scans that could not see.** A failed `simctl` used to look exactly like a
+machine with no simulators. Now every section and provider reports a status:
+`complete`, `partial` (some locations unreadable, sizes are a floor),
+`unavailable` (Docker's daemon is down, say) or `error`. A `du` that exits
+non-zero is reported as partial, not taken at its word. A missing tool is
+reported separately from a tool that failed.
+
 ## Stats and the menu bar app
 
-`purrge stats` deletes nothing. It reports how much there is and how much of
-it has gone stale: project artifacts under `PROJECT_ROOTS`, git worktrees under
-`WORKTREE_ROOTS`, and simulators and emulators.
+`purrge stats` deletes nothing. It reports free disk space, then how much there
+is and how much of it has gone stale: project artifacts under `PROJECT_ROOTS`,
+git worktrees under `WORKTREE_ROOTS`, simulators and emulators, and every
+provider above.
 
 ```
-  projects  ████████████████████████  14 GB · 232 MB idle 8+ weeks (6 of 22)
-  worktrees ████████████████████████  84 GB · 81 GB idle 14+ days (48 of 58, 20 held back)
-  sims      ████████████████████████  11 devices · 10 idle 30+ days · 18 GB in runtimes & images
+  disk      ████████████████████████  9.3 GB free of 460 GB  low on space — run purrge doctor
+  projects  ████████████████████████  13 GB · 1.1 MB idle 8+ weeks (4 of 12)
+  worktrees ████████████████████████  1.6 GB · 908 KB idle 14+ days (1 of 16)
+  sims      ████████████████████████  22 devices · 2.7 GB idle 30+ days (20 of 22)
+  images    ████████████████████████  28 GB · 10 GB reclaimable
+  caches    ████████████████████████  55 GB · 55 GB eligible, 8.3 MB held back
+  xcode     ████████████████████████  16 GB · 14 GB eligible
+  docker    ████████████████████████  37 GB · 11 GB eligible, 13 GB held back
+  tools     ████████████████████████  25 GB · 14 GB eligible, 6.0 GB held back
 ```
+
+Simulator totals subtract what purrge would hold back: a stale runtime that
+simulators still use is not counted as reclaimable.
 
 `--json` gives the same numbers to anything that wants to draw them.
 `--stream` prints one JSON line per section as soon as that section's scan
@@ -248,8 +342,12 @@ finishes. Simulators take about a second and a big worktree root takes half a
 minute, so nothing has to wait for the slowest scan. One such
 thing lives in this repo: **PurrgeBar**, a macOS menu bar app in
 [`apps/menubar`](apps/menubar). It shows a bar for each: green for in use, pink
-for stale. On the worktree bar, a dimmer pink marks stale worktrees that
-purrge holds back because they are unmerged. Each bar fills in as soon as its own scan is done. During a rescan, the
+for stale. A dimmer pink marks the stale part purrge holds back: unmerged
+worktrees, runtimes still in use. Free disk space comes first, and turns red
+and changes the icon to a warning when it runs low. Simulators are drawn by
+bytes rather than by device count, so one unused 8 GB runtime registers. Caches,
+Xcode, Docker and tools get a line each. A section that could not scan says so
+instead of showing zero. Each bar fills in as soon as its own scan is done. During a rescan, the
 previous numbers stay on screen. It rescans every 30 minutes, whenever
 `~/.purrge/config.yml` changes, and when you ask it to; a config change abandons
 a scan already in progress.
@@ -355,7 +453,10 @@ A ~20-project, 40 GB tree scans in under 4 seconds.
 
 ## Caveats
 
-- Deletion is real and immediate; nothing goes to the Trash.
+- Deletion is real and immediate. Nothing goes to the Trash, except Xcode
+  archives.
+- Clearing a package cache costs offline installs and slows the next install.
+  Each store is its own row, so untick the ones you rely on.
 - `vendor/` is only reclaimable if your `composer.lock` is committed. Same
   reasoning applies to any lockfile-less dependency dir.
 - mtime is a proxy for "am I still working on this", not proof. `--dry-run`

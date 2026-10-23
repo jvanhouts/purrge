@@ -14,15 +14,21 @@ struct PurrgeBarApp: App {
         MenuBarExtra {
             StatsView(model: model)
         } label: {
-            Image(systemName: model.hasStale ? "cat.fill" : "cat")
+            Image(systemName: model.disk?.low == true ? "exclamationmark.triangle.fill" : model.hasStale ? "cat.fill" : "cat")
         }
         .menuBarExtraStyle(.window)
     }
 }
 
 extension StatsModel {
-    /// The icon fills in once anything has gone stale — a nudge, not an alarm.
+    /// The icon fills in once anything could go — a nudge, not an alarm. A
+    /// stale runtime nobody uses counts as much as a stale project; one still
+    /// in use by a simulator does not count at all.
     var hasStale: Bool {
-        (projects?.staleBytes ?? 0) > 0 || (worktrees?.staleBytes ?? 0) > 0 || (devices?.staleCount ?? 0) > 0
+        (projects?.staleBytes ?? 0) > 0
+            || (worktrees?.staleBytes ?? 0) > (worktrees?.heldBackBytes ?? 0)
+            || (devices?.reclaimableBytes ?? 0) > 0
+            || (images?.reclaimableBytes ?? 0) > 0
+            || providers.contains { $0.eligibleBytes > 0 }
     }
 }

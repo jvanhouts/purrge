@@ -2,6 +2,7 @@ import { readdir, readFile, stat, lstat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ARTIFACT_DIRS, GATED_ARTIFACT_DIRS, NO_DESCEND, SKIP_DIRS, TAURI_DIR } from "./artifacts";
 import { mapLimit } from "./concurrency";
+import { measure, measurementIssue, type Issue } from "./storage";
 
 export type Artifact = { path: string; name: string; bytes: number };
 
@@ -26,6 +27,8 @@ export async function findProjects(
   root: string,
   /** Called the moment a project has been sized, before the walk finishes. */
   onProject?: (project: Project) => void,
+  /** Directories that could not be read, and sizes that are only a floor. */
+  onIssue?: (issue: Issue) => void,
 ): Promise<Project[]> {
   const projects: Project[] = [];
 
@@ -34,8 +37,11 @@ export async function findProjects(
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return 0; // unreadable — not our problem
+    } catch (err) {
+      // Unreadable is not the same as empty: say so, and carry on without it.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EACCES" || code === "EPERM") onIssue?.({ path: dir, code: "denied", message: "could not be read" });
+      return 0;
     }
 
     // A linked worktree belongs to `purrge worktrees`, which removes the whole
@@ -93,7 +99,7 @@ export async function findProjects(
       const artifacts = await mapLimit(artifactPaths, 8, async (path) => ({
         path,
         name: relative(dir, path) || path.slice(path.lastIndexOf("/") + 1),
-        bytes: await dirSize(path),
+        bytes: await dirSize(path, onIssue),
       }));
       const bytes = artifacts.reduce((n, a) => n + a.bytes, 0);
       if (bytes > 0) {
@@ -199,16 +205,20 @@ async function safeMtime(path: string): Promise<number> {
 
 const HAS_DU = process.platform !== "win32";
 
-/** Size of a directory tree in bytes. Uses `du` (C speed) when available. */
-export async function dirSize(path: string): Promise<number> {
+/**
+ * Size of a directory tree in bytes. Uses `du` (C speed) when available.
+ *
+ * `du` prints a total even when it had to skip something it could not read,
+ * and exits nonzero to say so. That total is a floor, not the size, and is
+ * reported as such rather than accepted quietly.
+ */
+export async function dirSize(path: string, onIssue?: (issue: Issue) => void): Promise<number> {
   if (HAS_DU) {
-    try {
-      const proc = Bun.spawn(["du", "-sk", path], { stdout: "pipe", stderr: "ignore" });
-      const text = await new Response(proc.stdout).text();
-      await proc.exited;
-      const kb = Number(text.trim().split(/\s+/)[0]);
-      if (Number.isFinite(kb)) return kb * 1024;
-    } catch {}
+    const m = await measure(path);
+    const issue = measurementIssue(path, m);
+    if (issue) onIssue?.(issue);
+    if (m.bytes !== null) return m.bytes;
+    if (m.missing || m.denied) return 0;
   }
   return walkSize(path);
 }

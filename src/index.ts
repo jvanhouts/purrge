@@ -20,7 +20,12 @@ import { contractHome, loadConfig } from "./config";
 import { runConfigCommand } from "./config-cli";
 import { findWorktrees, isSafe, riskLabel, type Worktree } from "./worktrees";
 import { findSims, isSafe as simIsSafe, removeSim, type Sim } from "./sims";
-import { collectStats, type Summary } from "./stats";
+import { collectStats, type Stats, type Summary } from "./stats";
+import { PROVIDER_COMMANDS } from "./providers";
+import { runProviderCommand, statusNote } from "./storage-cli";
+import { recordStatsScan, runDoctorCommand, runHistoryCommand } from "./doctor";
+import { appendHistory, type ScanEntry } from "./history";
+import { diskSpace } from "./storage";
 
 const HOME = homedir();
 
@@ -36,6 +41,9 @@ ${bold("USAGE")}
   purrge cargo sweep [options]
   purrge worktrees [days] [options]
   purrge sims [days] [options]
+  purrge caches | xcode | docker | tools [options]
+  purrge doctor [--json] [--add-roots]
+  purrge history
   purrge stats [options]
 
 ${bold("OPTIONS")}
@@ -60,7 +68,13 @@ ${bold("EXAMPLES")}
   purrge -a -j           ${dim("# inventory everything as JSON")}
   purrge worktrees 14    ${dim("# git worktrees idle for 14+ days")}
   purrge sims 30         ${dim("# simulators, runtimes and AVDs idle 30+ days")}
-  purrge stats -j        ${dim("# in-use vs stale totals: projects, worktrees, sims")}
+  purrge caches -n       ${dim("# npm, Bun, Gradle, Yarn, CocoaPods… caches")}
+  purrge xcode           ${dim("# DerivedData, per project; archives review-only")}
+  purrge docker -n       ${dim("# build cache and unused images; volumes review-only")}
+  purrge tools           ${dim("# Node, NDK, Rust, browser versions nothing pins")}
+  purrge doctor          ${dim("# why is the disk full? read-only")}
+  purrge history         ${dim("# what grew between scans")}
+  purrge stats -j        ${dim("# in-use vs stale totals, disk space, every provider")}
 
 ${bold("CONFIG")}
   ~/.purrge/config.yml   ${dim("# machine-wide settings, incl. WORKTREE_ROOTS, PROJECT_ROOTS")}
@@ -204,6 +218,19 @@ function die(msg: string): never {
 
 if (process.argv[2] === "config") {
   await runConfigCommand(process.argv.slice(3));
+  process.exit(0);
+}
+if (process.argv[2] === "doctor" || process.argv[2] === "storage") {
+  await runDoctorCommand(process.argv.slice(3));
+  process.exit(0);
+}
+if (process.argv[2] === "history") {
+  await runHistoryCommand(process.argv.slice(3));
+  process.exit(0);
+}
+const providerCommand = PROVIDER_COMMANDS.get(process.argv[2] ?? "");
+if (providerCommand) {
+  await runProviderCommand(providerCommand, process.argv.slice(3), (await loadConfig()).PROJECT_ROOTS);
   process.exit(0);
 }
 
@@ -374,6 +401,7 @@ if (!opts.yes) {
 console.log("");
 let freed = 0;
 let failed = 0;
+const diskBefore = await diskSpace();
 
 await mapLimit(chosen, 6, async (p) => {
   const targets = await mapLimit(p.artifacts, 4, async (a) => {
@@ -394,12 +422,29 @@ await mapLimit(chosen, 6, async (p) => {
   console.log(`  ${green("✓")} ${label(p).padEnd(nameW)}  ${dim(humanBytes(sum).padStart(9))}`);
 });
 
+// What was deleted and what the disk got back are measured separately: APFS
+// clones and hardlinks can mean less comes back than the rows add up to.
+const diskAfter = await diskSpace();
+await appendHistory({
+  kind: "cleanup",
+  at: Date.now(),
+  provider: opts.worktrees ? "worktrees" : opts.sims ? "sims" : opts.cargoSweep ? "cargo" : "projects",
+  items: chosen.length,
+  failed,
+  estimatedBytes: freed,
+  freeBefore: diskBefore?.freeBytes ?? null,
+  freeAfter: diskAfter?.freeBytes ?? null,
+});
+const diskNote = diskBefore && diskAfter
+  ? ` Disk free: ${humanBytes(diskBefore.freeBytes)} → ${humanBytes(diskAfter.freeBytes)}.`
+  : "";
+
 await ui.result(
   failed
     ? `Freed ${humanBytes(freed)} — ${
         opts.worktrees || opts.sims ? plural(failed, NOUN) : plural(failed, "directory", "directories")
-      } refused to budge.`
-    : `Freed ${humanBytes(freed)}. 🐱`,
+      } refused to budge.${diskNote}`
+    : `Freed ${humanBytes(freed)}. 🐱${diskNote}`,
   !failed,
 );
 
@@ -416,18 +461,25 @@ async function printStats() {
     opts.projectRoots,
     opts.stream ? (update) => console.log(JSON.stringify(update)) : undefined,
   );
+  await recordStatsScan(statsEntry(stats));
   if (opts.stream) return;
   if (opts.json) {
     console.log(JSON.stringify(stats, null, 2));
     return;
   }
 
-  const { projects, worktrees, devices, images } = stats;
+  const { disk, projects, worktrees, devices, images, providers } = stats;
   console.log("");
+  if (disk) {
+    const used = disk.usedBytes / disk.totalBytes;
+    console.log(`  ${bold("disk     ")} ${diskBar(used)}  ${humanBytes(disk.freeBytes)} free ${dim(`of ${humanBytes(disk.totalBytes)}`)}${
+      disk.low ? `  ${red("low on space")} ${dim(`— run ${bold("purrge doctor")}`)}` : ""
+    }`);
+  }
   if (projects.roots.length) {
     console.log(`  ${bold("projects ")} ${bar(projects, "bytes", "staleBytes")}  ${humanBytes(projects.bytes)} ${
       dim(`· ${humanBytes(projects.staleBytes)} idle ${projects.staleWeeks}+ weeks (${projects.staleCount} of ${projects.count})`)
-    }`);
+    }${health(projects)}`);
   } else {
     console.log(`  ${bold("projects ")} ${dim(`no roots — set ${bold("PROJECT_ROOTS")} in ~/.purrge/config.yml, or pass ${bold("--root")}`)}`);
   }
@@ -437,10 +489,50 @@ async function printStats() {
       dim(`· ${humanBytes(worktrees.staleBytes)} idle ${worktrees.staleDays}+ days (${worktrees.staleCount} of ${worktrees.count}${heldBack})`)
     }`);
   }
-  console.log(`  ${bold("sims     ")} ${bar(devices, "count", "staleCount")}  ${plural(devices.count, "device")} ${
-    dim(`· ${devices.staleCount} idle ${devices.staleDays}+ days · ${humanBytes(images.bytes)} in runtimes & images`)
+  // Devices by bytes, like everything else: a count says nothing about space.
+  const simHeld = devices.heldBackBytes + images.heldBackBytes;
+  console.log(`  ${bold("sims     ")} ${bar(devices, "bytes", "staleBytes")}  ${plural(devices.count, "device")} ${
+    dim(`· ${humanBytes(devices.staleBytes)} idle ${devices.staleDays}+ days (${devices.staleCount} of ${devices.count})`)
+  }${health(devices)}`);
+  console.log(`  ${bold("images   ")} ${bar(images, "bytes", "staleBytes")}  ${humanBytes(images.bytes)} ${
+    dim(`· ${humanBytes(images.staleBytes - images.heldBackBytes)} reclaimable${simHeld ? `, ${humanBytes(simHeld)} held back` : ""}`)
   }`);
-  console.log(`\n  ${green("█")} ${dim("in use")}  ${pink("█")} ${dim("stale")}\n`);
+  for (const p of providers) {
+    const label = p.name.padEnd(9);
+    const rest = p.heldBackBytes ? `, ${humanBytes(p.heldBackBytes)} held back` : "";
+    console.log(`  ${bold(label)} ${providerBar(p.bytes, p.eligibleBytes)}  ${humanBytes(p.bytes)} ${
+      dim(`· ${humanBytes(p.eligibleBytes)} eligible${rest}`)
+    }${health(p)}`);
+  }
+  console.log(`\n  ${green("█")} ${dim("in use")}  ${pink("█")} ${dim("stale / eligible")}\n`);
+}
+
+/** A section that could not see everything says so, rather than looking empty. */
+function health(s: { status: string }): string {
+  return s.status === "complete" ? "" : `  ${pink(s.status)} ${dim(statusNote(s.status as "partial"))}`;
+}
+
+function diskBar(used: number, width = 24): string {
+  const usedCells = Math.round(used * width);
+  return (used > 0.9 ? red : dim)("█".repeat(usedCells)) + dim("░".repeat(width - usedCells));
+}
+
+function providerBar(bytes: number, eligible: number, width = 24): string {
+  if (!bytes) return dim("░".repeat(width));
+  const cells = Math.round((Math.min(eligible, bytes) / bytes) * width);
+  return green("█".repeat(width - cells)) + pink("█".repeat(cells));
+}
+
+/** What `purrge history` keeps from a stats run: totals per section. */
+function statsEntry(stats: Stats): ScanEntry {
+  const scopes: ScanEntry["scopes"] = {
+    projects: { status: stats.projects.status, bytes: stats.projects.bytes },
+    worktrees: { status: "complete", bytes: stats.worktrees.bytes },
+    sims: { status: stats.devices.status, bytes: stats.devices.bytes + stats.images.bytes },
+  };
+  for (const p of stats.providers) scopes[p.name] = { status: p.status, bytes: p.bytes };
+  const locations = Object.fromEntries(Object.entries(scopes).map(([name, s]) => [`${name}:total`, s.bytes]));
+  return { kind: "scan", source: "stats", at: stats.generatedAt, disk: stats.disk, scopes, locations };
 }
 
 /** A fixed-width bar, green for what is in use and pink for what has gone stale. */

@@ -5,7 +5,7 @@ import Observation
 @Observable
 final class StatsModel {
     enum Section: CaseIterable {
-        case projects, worktrees, sims
+        case disk, projects, worktrees, sims, providers
     }
 
     // Each section keeps its last numbers until a scan replaces them, so a
@@ -13,7 +13,10 @@ final class StatsModel {
     private(set) var projects: Stats.Projects?
     private(set) var worktrees: Stats.Worktrees?
     private(set) var devices: Stats.Devices?
-    private(set) var images: Stats.Summary?
+    private(set) var images: Stats.Images?
+    private(set) var disk: Stats.Disk?
+    /// By name, in the order purrge first reported them.
+    private(set) var providers: [Stats.Provider] = []
 
     /// Sections the running scan has not delivered yet.
     private(set) var pending: Set<Section> = []
@@ -81,6 +84,17 @@ final class StatsModel {
             devices = d
             images = update.images
             pending.remove(.sims)
+        }
+        if let d = update.disk {
+            disk = d
+            pending.remove(.disk)
+        }
+        if let p = update.provider {
+            if let i = providers.firstIndex(where: { $0.name == p.name }) {
+                providers[i] = p
+            } else {
+                providers.append(p)
+            }
         }
     }
 

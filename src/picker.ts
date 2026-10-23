@@ -14,6 +14,8 @@ export type PickRow<T> = {
   /** Pre-padded columns, plain text — this module adds the colour. */
   cells: string[];
   bytes: number;
+  /** Starts ticked unless false — things only worth a look start unticked. */
+  selected?: boolean;
 };
 
 const ESC = "\x1b";
@@ -29,7 +31,7 @@ export type PickOptions<T> = {
 
 /** @returns the chosen values, or null if the user backed out */
 export async function pick<T>({ rows, header, footer }: PickOptions<T>): Promise<T[] | null> {
-  const selected = rows.map(() => true);
+  const selected = rows.map((r) => r.selected !== false);
   let cursor = 0;
   let offset = 0;
   const region = new LiveRegion();
